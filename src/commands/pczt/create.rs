@@ -65,7 +65,7 @@ impl Command {
 
         let (_, db_data) = get_db_paths(wallet_dir.as_ref());
         let mut db_data = WalletDb::for_path(db_data, params, SystemClock, OsRng)?;
-        let account = select_account(&db_data, self.account_id)?;
+        let account = select_account(&db_data, self.account_id, zcash_client_sqlite::AccountUuid::from_uuid)?;
 
         // Create the PCZT.
         let change_strategy = MultiOutputChangeStrategy::new(

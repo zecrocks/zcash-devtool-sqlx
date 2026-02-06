@@ -22,7 +22,7 @@ impl Command {
 
         let (_, db_data) = get_db_paths(wallet_dir);
         let db_data = WalletDb::for_path(db_data, params, (), ())?;
-        let account = select_account(&db_data, self.account_id)?;
+        let account = select_account(&db_data, self.account_id, zcash_client_sqlite::AccountUuid::from_uuid)?;
 
         let chain_height = db_data
             .chain_height()?

@@ -131,49 +131,104 @@ fn main() -> Result<(), anyhow::Error> {
 
         match cmd {
             Command::Inspect(command) => command.run().await,
-            Command::Wallet(commands::Wallet {
-                wallet_dir,
-                command,
-            }) => match command {
-                commands::wallet::Command::Init(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::InitFvk(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::DisplayMnemonic(command) => command.run(wallet_dir),
-                commands::wallet::Command::Reset(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::ImportUfvk(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Upgrade(command) => command.run(wallet_dir),
-                commands::wallet::Command::Sync(command) => {
-                    command
-                        .run(
-                            shutdown,
-                            wallet_dir,
-                            #[cfg(feature = "tui")]
-                            tui,
-                        )
-                        .await
-                }
-                commands::wallet::Command::Enhance(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Balance(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::GenerateAccount(command) => {
-                    command.run(wallet_dir).await
-                }
-                commands::wallet::Command::ListAccounts(command) => command.run(wallet_dir),
-                commands::wallet::Command::GenerateAddress(command) => command.run(wallet_dir),
-                commands::wallet::Command::ListAddresses(command) => command.run(wallet_dir),
-                commands::wallet::Command::DerivePath(command) => command.run(wallet_dir),
-                commands::wallet::Command::ListTx(command) => command.run(wallet_dir),
-                commands::wallet::Command::ListUnspent(command) => command.run(wallet_dir),
-                commands::wallet::Command::Shield(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Propose(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Pay(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Send(command) => command.run(wallet_dir).await,
-                commands::wallet::Command::Tree(command) => match command {
-                    #[cfg(feature = "tui")]
-                    commands::wallet::tree::Command::Explore(command) => {
-                        command.run(shutdown, wallet_dir, tui).await
+            Command::Wallet(wallet_args) => {
+                let wallet_dir = wallet_args.wallet_dir;
+                #[cfg(feature = "postgres")]
+                let db_backend = data::DbBackend::parse(&wallet_args.database);
+                #[cfg(feature = "postgres")]
+                let pg_wallet_id = wallet_args.wallet_id;
+
+                match wallet_args.command {
+                    commands::wallet::Command::Init(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::InitFvk(command) => {
+                        command
+                            .run(
+                                wallet_dir,
+                                #[cfg(feature = "postgres")]
+                                db_backend,
+                                #[cfg(feature = "postgres")]
+                                pg_wallet_id,
+                            )
+                            .await
                     }
-                    commands::wallet::tree::Command::Fix(command) => command.run(wallet_dir).await,
-                },
-            },
+                    commands::wallet::Command::DisplayMnemonic(command) => command.run(wallet_dir),
+                    commands::wallet::Command::Reset(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::ImportUfvk(command) => {
+                        command
+                            .run(
+                                wallet_dir,
+                                #[cfg(feature = "postgres")]
+                                db_backend,
+                                #[cfg(feature = "postgres")]
+                                pg_wallet_id,
+                            )
+                            .await
+                    }
+                    commands::wallet::Command::Upgrade(command) => command.run(wallet_dir),
+                    commands::wallet::Command::Sync(command) => {
+                        command
+                            .run(
+                                shutdown,
+                                wallet_dir,
+                                #[cfg(feature = "postgres")]
+                                db_backend,
+                                #[cfg(feature = "postgres")]
+                                pg_wallet_id,
+                                #[cfg(feature = "tui")]
+                                tui,
+                            )
+                            .await
+                    }
+                    commands::wallet::Command::Enhance(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::Balance(command) => {
+                        command
+                            .run(
+                                wallet_dir,
+                                #[cfg(feature = "postgres")]
+                                db_backend,
+                                #[cfg(feature = "postgres")]
+                                pg_wallet_id,
+                            )
+                            .await
+                    }
+                    commands::wallet::Command::GenerateAccount(command) => {
+                        command.run(wallet_dir).await
+                    }
+                    commands::wallet::Command::ListAccounts(command) => {
+                        command.run(
+                            wallet_dir,
+                            #[cfg(feature = "postgres")]
+                            db_backend,
+                            #[cfg(feature = "postgres")]
+                            pg_wallet_id,
+                        )
+                    }
+                    commands::wallet::Command::GenerateAddress(command) => command.run(wallet_dir),
+                    commands::wallet::Command::ListAddresses(command) => command.run(wallet_dir),
+                    commands::wallet::Command::DerivePath(command) => command.run(wallet_dir),
+                    commands::wallet::Command::ListTx(command) => command.run(
+                        wallet_dir,
+                        #[cfg(feature = "postgres")]
+                        db_backend.clone(),
+                        #[cfg(feature = "postgres")]
+                        pg_wallet_id,
+                    ),
+                    commands::wallet::Command::ListUnspent(command) => command.run(wallet_dir),
+                    commands::wallet::Command::Shield(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::Propose(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::Pay(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::Send(command) => command.run(wallet_dir).await,
+                    commands::wallet::Command::Tree(command) => match command {
+                        #[cfg(feature = "tui")]
+                        commands::wallet::tree::Command::Explore(command) => {
+                            command.run(shutdown, wallet_dir, tui).await
+                        }
+                        commands::wallet::tree::Command::Fix(command) => {
+                            command.run(wallet_dir).await
+                        }
+                    },
+                }
+            }
             Command::Zip48(commands::Zip48 {
                 wallet_dir,
                 command,

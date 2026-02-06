@@ -1,5 +1,7 @@
 use anyhow::anyhow;
 use clap::Args;
+#[cfg(feature = "postgres")]
+use uuid::Uuid;
 
 use zcash_address::unified::{Encoding, Ufvk};
 use zcash_client_backend::{
@@ -11,6 +13,9 @@ use zcash_protocol::consensus::{self, NetworkType};
 use zip32::fingerprint::SeedFingerprint;
 
 use crate::{config::WalletConfig, data::init_dbs, parse_hex, remote::ConnectionArgs};
+
+#[cfg(feature = "postgres")]
+use crate::data::DbBackend;
 
 // Options accepted for the `init-fvk` command
 #[derive(Debug, Args)]
@@ -41,7 +46,12 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    pub(crate) async fn run(self, wallet_dir: Option<String>) -> Result<(), anyhow::Error> {
+    pub(crate) async fn run(
+        self,
+        wallet_dir: Option<String>,
+        #[cfg(feature = "postgres")] db_backend: DbBackend,
+        #[cfg(feature = "postgres")] _pg_wallet_id: Option<Uuid>,
+    ) -> Result<(), anyhow::Error> {
         let opts = self;
 
         let (network_type, ufvk) = Ufvk::decode(&opts.fvk)
@@ -107,6 +117,25 @@ impl Command {
             _ => Err(anyhow!("Need either both (for spending) or neither (for view-only) of seed_fingerprint and hd_account_index")),
         }?;
 
+        #[cfg(feature = "postgres")]
+        if let DbBackend::Postgres(ref url) = db_backend {
+            let pool = zcash_client_sqlx::create_pool_default(url).await?;
+            zcash_client_sqlx::init::init_wallet_db(&pool).await?;
+
+            let wallet_id =
+                zcash_client_sqlx::WalletDb::create_wallet_async(&pool, &network, Some(&opts.name))
+                    .await?;
+            println!("Created wallet: {}", wallet_id.expose_uuid());
+
+            zcash_client_sqlx::wallet::import_account_ufvk(
+                &pool, &network, wallet_id,
+                &opts.name, &ufvk, &birthday, purpose, None,
+            ).await?;
+
+            return Ok(());
+        }
+
+        // SQLite path
         // Save the wallet config to disk.
         WalletConfig::init_without_mnemonic(wallet_dir.as_ref(), birthday.height(), network)?;
 

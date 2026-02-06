@@ -1,5 +1,7 @@
 use anyhow::anyhow;
 use clap::Args;
+#[cfg(feature = "postgres")]
+use uuid::Uuid;
 
 use rand::rngs::OsRng;
 use zcash_address::unified::{self, Encoding};
@@ -13,6 +15,9 @@ use zcash_protocol::consensus;
 use zip32::fingerprint::SeedFingerprint;
 
 use crate::{data::get_db_paths, error, parse_hex, remote::ConnectionArgs};
+
+#[cfg(feature = "postgres")]
+use crate::data::DbBackend;
 
 // Options accepted for the `import-ufvk` command
 #[derive(Debug, Args)]
@@ -41,7 +46,12 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    pub(crate) async fn run(self, wallet_dir: Option<String>) -> Result<(), anyhow::Error> {
+    pub(crate) async fn run(
+        self,
+        wallet_dir: Option<String>,
+        #[cfg(feature = "postgres")] db_backend: DbBackend,
+        #[cfg(feature = "postgres")] pg_wallet_id: Option<Uuid>,
+    ) -> Result<(), anyhow::Error> {
         let (network, ufvk) = unified::Ufvk::decode(&self.ufvk)?;
         let ufvk = UnifiedFullViewingKey::parse(&ufvk).map_err(|e| anyhow!("{e}"))?;
 
@@ -53,13 +63,8 @@ impl Command {
             }
         }?;
 
-        let (_, db_data) = get_db_paths(wallet_dir.as_ref());
-        let mut db_data = WalletDb::for_path(db_data, params, SystemClock, OsRng)?;
-
         // Construct an `AccountBirthday` for the account's birthday.
         let birthday = {
-            // Fetch the tree state corresponding to the last block prior to the wallet's
-            // birthday height. NOTE: THIS APPROACH LEAKS THE BIRTHDAY TO THE SERVER!
             let mut client = self.connection.connect(params, wallet_dir.as_ref()).await?;
 
             let tip_height = client
@@ -96,7 +101,45 @@ impl Command {
             _ => Err(anyhow!("Need either both (for spending) or neither (for view-only) of seed_fingerprint and hd_account_index")),
         }?;
 
-        // Import the UFVK.
+        #[cfg(feature = "postgres")]
+        if let DbBackend::Postgres(ref url) = db_backend {
+            let pool = zcash_client_sqlx::create_pool_default(url).await?;
+
+            let wallet_id = match pg_wallet_id {
+                Some(uuid) => zcash_client_sqlx::WalletId::from_uuid(uuid),
+                None => {
+                    let wallets =
+                        zcash_client_sqlx::WalletDb::<consensus::Network>::list_wallets_async(
+                            &pool,
+                        )
+                        .await?;
+                    match &wallets[..] {
+                        [] => return Err(anyhow!("No wallets found. Use init-fvk to create one.")),
+                        [w] => w.id,
+                        _ => {
+                            return Err(anyhow!(
+                                "Multiple wallets found. Please specify --wallet-id."
+                            ))
+                        }
+                    }
+                }
+            };
+
+            let mut db = zcash_client_sqlx::WalletDb::for_wallet_with_handle(
+                pool,
+                wallet_id,
+                params,
+                tokio::runtime::Handle::current(),
+            );
+
+            db.import_account_ufvk(&self.name, &ufvk, &birthday, purpose, None)?;
+
+            return Ok(());
+        }
+
+        // SQLite path
+        let (_, db_data) = get_db_paths(wallet_dir.as_ref());
+        let mut db_data = WalletDb::for_path(db_data, params, SystemClock, OsRng)?;
         db_data.import_account_ufvk(&self.name, &ufvk, &birthday, purpose, None)?;
 
         Ok(())

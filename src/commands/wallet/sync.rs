@@ -7,6 +7,8 @@ use orchard::tree::MerkleHashOrchard;
 use prost::Message;
 use rand::rngs::OsRng;
 use tokio::{fs::File, io::AsyncWriteExt, task::JoinHandle};
+#[cfg(feature = "postgres")]
+use uuid::Uuid;
 
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -35,6 +37,9 @@ use crate::{
     ShutdownListener,
 };
 
+#[cfg(feature = "postgres")]
+use crate::data::DbBackend;
+
 #[cfg(feature = "transparent-inputs")]
 use {
     ::transparent::{
@@ -42,7 +47,6 @@ use {
         bundle::{OutPoint, TxOut},
     },
     zcash_client_backend::wallet::WalletTransparentOutput,
-    zcash_client_sqlite::AccountUuid,
     zcash_keys::encoding::AddressCodec,
     zcash_protocol::value::Zatoshis,
     zcash_script::script,
@@ -78,14 +82,93 @@ impl Command {
         self,
         mut shutdown: ShutdownListener,
         wallet_dir: Option<String>,
+        #[cfg(feature = "postgres")] db_backend: DbBackend,
+        #[cfg(feature = "postgres")] pg_wallet_id: Option<Uuid>,
         #[cfg(feature = "tui")] tui: Tui,
     ) -> Result<(), anyhow::Error> {
-        let params = get_wallet_network(wallet_dir.as_ref())?;
-
-        let (fsblockdb_root, db_data) = get_db_paths(wallet_dir.as_ref());
+        let (fsblockdb_root, _) = get_db_paths(wallet_dir.as_ref());
         let fsblockdb_root = fsblockdb_root.as_path();
         let mut db_cache = FsBlockDb::for_path(fsblockdb_root).map_err(error::Error::from)?;
-        let mut db_data = WalletDb::for_path(db_data, params, SystemClock, OsRng)?;
+        zcash_client_sqlite::chain::init::init_blockmeta_db(&mut db_cache)?;
+
+        #[cfg(feature = "postgres")]
+        if let DbBackend::Postgres(ref url) = db_backend {
+            let pool = zcash_client_sqlx::create_pool_default(url).await?;
+
+            let wallet_id = match pg_wallet_id {
+                Some(uuid) => zcash_client_sqlx::WalletId::from_uuid(uuid),
+                None => {
+                    let wallets =
+                        zcash_client_sqlx::WalletDb::<zcash_protocol::consensus::Network>::list_wallets_async(&pool).await?;
+                    match &wallets[..] {
+                        [] => return Err(anyhow!("No wallets found.")),
+                        [w] => w.id,
+                        _ => return Err(anyhow!("Multiple wallets found. Please specify --wallet-id.")),
+                    }
+                }
+            };
+
+            let wallets =
+                zcash_client_sqlx::WalletDb::<zcash_protocol::consensus::Network>::list_wallets_async(&pool).await?;
+            let wallet_info = wallets
+                .iter()
+                .find(|w| w.id == wallet_id)
+                .ok_or_else(|| anyhow!("Wallet not found"))?;
+            let params = match wallet_info.network.to_lowercase().as_str() {
+                "main" => zcash_protocol::consensus::Network::MainNetwork,
+                _ => zcash_protocol::consensus::Network::TestNetwork,
+            };
+
+            let mut db_data = zcash_client_sqlx::WalletDb::for_wallet_with_handle(
+                pool,
+                wallet_id,
+                params,
+                tokio::runtime::Handle::current(),
+            );
+
+            let mut client = self.connection.connect(params, wallet_dir.as_ref()).await?;
+
+            #[cfg(feature = "tui")]
+            let wallet_birthday = db_data
+                .get_wallet_birthday()?
+                .unwrap_or_else(|| params.activation_height(NetworkUpgrade::Sapling).unwrap());
+
+            #[cfg(feature = "tui")]
+            let tui_handle = if self.defrag {
+                let mut app = defrag::App::new(shutdown.tui_quit_signal(), wallet_birthday);
+                let handle = app.handle();
+                tokio::spawn(async move {
+                    if let Err(e) = app.run(tui).await {
+                        error!("Error while running TUI: {e}");
+                    }
+                });
+                Some(handle)
+            } else {
+                None
+            };
+
+            update_subtree_roots(&mut client, &mut db_data).await?;
+
+            while running(
+                &mut shutdown,
+                &mut client,
+                &params,
+                fsblockdb_root,
+                &mut db_cache,
+                &mut db_data,
+                #[cfg(feature = "tui")]
+                tui_handle.as_ref(),
+            )
+            .await?
+            {}
+
+            return Ok(());
+        }
+
+        // SQLite path
+        let params = get_wallet_network(wallet_dir.as_ref())?;
+        let (_, db_data_path) = get_db_paths(wallet_dir.as_ref());
+        let mut db_data = WalletDb::for_path(db_data_path, params, SystemClock, OsRng)?;
         let mut client = self.connection.connect(params, wallet_dir.as_ref()).await?;
 
         #[cfg(feature = "tui")]
@@ -111,219 +194,6 @@ impl Command {
         // 2) Pass the commitment tree data to the database.
         update_subtree_roots(&mut client, &mut db_data).await?;
 
-        #[allow(clippy::too_many_arguments)]
-        async fn running<P: Parameters + Send + 'static>(
-            shutdown: &mut ShutdownListener,
-            client: &mut CompactTxStreamerClient<Channel>,
-            params: &P,
-            fsblockdb_root: &Path,
-            db_cache: &mut FsBlockDb,
-            db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
-            #[cfg(feature = "tui")] tui_handle: Option<&defrag::AppHandle>,
-        ) -> Result<bool, anyhow::Error> {
-            // 3) Download chain tip metadata from lightwalletd
-            // 4) Notify the wallet of the updated chain tip.
-            let _chain_tip = update_chain_tip(client, db_data).await?;
-            #[cfg(feature = "tui")]
-            if let Some(handle) = tui_handle {
-                handle.set_wallet_summary(
-                    db_data.get_wallet_summary(ConfirmationsPolicy::default())?,
-                );
-            }
-
-            // Refresh UTXOs for the accounts in the wallet.
-            #[cfg(feature = "transparent-inputs")]
-            for account_id in db_data.get_account_ids()? {
-                info!(
-                    "Refreshing UTXOs for {:?} from height {}",
-                    account_id,
-                    BlockHeight::from(0),
-                );
-                refresh_utxos(params, client, db_data, account_id, BlockHeight::from(0)).await?;
-            }
-
-            // 5) Get the suggested scan ranges from the wallet database
-            info!("Fetching scan ranges");
-            let mut scan_ranges = db_data.suggest_scan_ranges()?;
-            info!("Fetched {} scan ranges", scan_ranges.len());
-            #[cfg(feature = "tui")]
-            if let Some(handle) = tui_handle {
-                if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
-                    // TUI exited.
-                    return Ok(false);
-                }
-            }
-            if shutdown.requested() {
-                return Ok(false);
-            }
-
-            // Store the handles to cached block deletions (which we spawn into separate
-            // tasks to allow us to continue downloading and scanning other ranges).
-            let mut block_deletions = vec![];
-
-            // 6) Run the following loop until the wallet's view of the chain tip as of
-            //    the previous wallet session is valid.
-            loop {
-                // If there is a range of blocks that needs to be verified, it will always
-                // be returned as the first element of the vector of suggested ranges.
-                match scan_ranges.first() {
-                    Some(scan_range) if scan_range.priority() == ScanPriority::Verify => {
-                        // Download the blocks in `scan_range` into the block source,
-                        // overwriting any existing blocks in this range.
-                        let block_meta = download_blocks(
-                            client,
-                            fsblockdb_root,
-                            db_cache,
-                            scan_range,
-                            shutdown,
-                            #[cfg(feature = "tui")]
-                            tui_handle,
-                        )
-                        .await?;
-
-                        if shutdown.requested() {
-                            return Ok(false);
-                        }
-
-                        let chain_state =
-                            download_chain_state(client, scan_range.block_range().start - 1)
-                                .await?;
-
-                        // Scan the downloaded blocks and check for scanning errors that
-                        // indicate the wallet's chain tip is out of sync with blockchain
-                        // history.
-                        let scan_ranges_updated = scan_blocks(
-                            params,
-                            fsblockdb_root,
-                            db_cache,
-                            db_data,
-                            &chain_state,
-                            scan_range,
-                            #[cfg(feature = "tui")]
-                            tui_handle,
-                            #[cfg(feature = "tui")]
-                            _chain_tip,
-                        )?;
-
-                        // Delete the now-scanned blocks, because keeping the entire chain
-                        // in CompactBlock files on disk is horrendous for the filesystem.
-                        block_deletions.push(delete_cached_blocks(fsblockdb_root, block_meta));
-
-                        if scan_ranges_updated {
-                            // The suggested scan ranges have been updated, so we re-request.
-                            scan_ranges = db_data.suggest_scan_ranges()?;
-                            #[cfg(feature = "tui")]
-                            if let Some(handle) = tui_handle {
-                                if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
-                                    // TUI exited.
-                                    return Ok(false);
-                                }
-                            }
-                            if shutdown.requested() {
-                                return Ok(false);
-                            }
-                        } else {
-                            // At this point, the cache and scanned data are locally
-                            // consistent (though not necessarily consistent with the
-                            // latest chain tip - this would be discovered the next time
-                            // this codepath is executed after new blocks are received) so
-                            // we can break out of the loop.
-                            break;
-                        }
-                    }
-                    _ => {
-                        // Nothing to verify; break out of the loop
-                        break;
-                    }
-                }
-            }
-
-            // 7) Loop over the remaining suggested scan ranges, retrieving the requested data
-            //    and calling `scan_cached_blocks` on each range.
-            let scan_ranges = db_data.suggest_scan_ranges()?;
-            debug!("Suggested ranges: {:?}", scan_ranges);
-            #[cfg(feature = "tui")]
-            if let Some(handle) = tui_handle {
-                if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
-                    // TUI exited.
-                    return Ok(false);
-                }
-            }
-            if shutdown.requested() {
-                return Ok(false);
-            }
-            for scan_range in scan_ranges.into_iter().flat_map(|r| {
-                // Limit the number of blocks we download and scan at any one time.
-                (0..).scan(r, |acc, _| {
-                    if acc.is_empty() {
-                        None
-                    } else if let Some((cur, next)) =
-                        acc.split_at(acc.block_range().start + BATCH_SIZE)
-                    {
-                        *acc = next;
-                        Some(cur)
-                    } else {
-                        let cur = acc.clone();
-                        let end = acc.block_range().end;
-                        *acc = ScanRange::from_parts(end..end, acc.priority());
-                        Some(cur)
-                    }
-                })
-            }) {
-                // Download the blocks in `scan_range` into the block source.
-                let block_meta = download_blocks(
-                    client,
-                    fsblockdb_root,
-                    db_cache,
-                    &scan_range,
-                    shutdown,
-                    #[cfg(feature = "tui")]
-                    tui_handle,
-                )
-                .await?;
-
-                if shutdown.requested() {
-                    return Ok(false);
-                }
-
-                let chain_state =
-                    download_chain_state(client, scan_range.block_range().start - 1).await?;
-
-                // Scan the downloaded blocks.
-                let scan_ranges_updated = scan_blocks(
-                    params,
-                    fsblockdb_root,
-                    db_cache,
-                    db_data,
-                    &chain_state,
-                    &scan_range,
-                    #[cfg(feature = "tui")]
-                    tui_handle,
-                    #[cfg(feature = "tui")]
-                    _chain_tip,
-                )?;
-
-                // Delete the now-scanned blocks.
-                block_deletions.push(delete_cached_blocks(fsblockdb_root, block_meta));
-
-                if scan_ranges_updated || shutdown.requested() {
-                    // The suggested scan ranges have been updated (either due to a continuity
-                    // error or because a higher priority range has been added).
-                    info!("Waiting for cached blocks to be deleted...");
-                    for deletion in block_deletions {
-                        deletion.await?;
-                    }
-                    return Ok(!shutdown.requested());
-                }
-            }
-
-            info!("Waiting for cached blocks to be deleted...");
-            for deletion in block_deletions {
-                deletion.await?;
-            }
-            Ok(false)
-        }
-
         while running(
             &mut shutdown,
             &mut client,
@@ -341,10 +211,233 @@ impl Command {
     }
 }
 
-async fn update_subtree_roots<P: Parameters>(
+#[allow(clippy::too_many_arguments)]
+async fn running<P: Parameters + Send + 'static, W>(
+    shutdown: &mut ShutdownListener,
     client: &mut CompactTxStreamerClient<Channel>,
-    db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
-) -> Result<(), anyhow::Error> {
+    params: &P,
+    fsblockdb_root: &Path,
+    db_cache: &mut FsBlockDb,
+    db_data: &mut W,
+    #[cfg(feature = "tui")] tui_handle: Option<&defrag::AppHandle>,
+) -> Result<bool, anyhow::Error>
+where
+    W: WalletRead + WalletWrite + WalletCommitmentTrees,
+    W::AccountId: std::fmt::Debug + subtle::ConditionallySelectable + Default + Send + 'static,
+    <W as WalletRead>::Error: std::error::Error + Sync + Send + 'static,
+    <W as WalletCommitmentTrees>::Error: std::error::Error + Sync + Send + 'static,
+{
+    // 3) Download chain tip metadata from lightwalletd
+    // 4) Notify the wallet of the updated chain tip.
+    let _chain_tip = update_chain_tip(client, db_data).await?;
+    #[cfg(feature = "tui")]
+    if let Some(handle) = tui_handle {
+        handle.set_wallet_summary(
+            db_data.get_wallet_summary(ConfirmationsPolicy::default())?,
+        );
+    }
+
+    // Refresh UTXOs for the accounts in the wallet.
+    #[cfg(feature = "transparent-inputs")]
+    for account_id in db_data.get_account_ids()? {
+        info!(
+            "Refreshing UTXOs for {:?} from height {}",
+            account_id,
+            BlockHeight::from(0),
+        );
+        refresh_utxos(params, client, db_data, account_id, BlockHeight::from(0)).await?;
+    }
+
+    // 5) Get the suggested scan ranges from the wallet database
+    info!("Fetching scan ranges");
+    let mut scan_ranges = db_data.suggest_scan_ranges()?;
+    info!("Fetched {} scan ranges", scan_ranges.len());
+    #[cfg(feature = "tui")]
+    if let Some(handle) = tui_handle {
+        if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
+            // TUI exited.
+            return Ok(false);
+        }
+    }
+    if shutdown.requested() {
+        return Ok(false);
+    }
+
+    // Store the handles to cached block deletions (which we spawn into separate
+    // tasks to allow us to continue downloading and scanning other ranges).
+    let mut block_deletions = vec![];
+
+    // 6) Run the following loop until the wallet's view of the chain tip as of
+    //    the previous wallet session is valid.
+    loop {
+        // If there is a range of blocks that needs to be verified, it will always
+        // be returned as the first element of the vector of suggested ranges.
+        match scan_ranges.first() {
+            Some(scan_range) if scan_range.priority() == ScanPriority::Verify => {
+                // Download the blocks in `scan_range` into the block source,
+                // overwriting any existing blocks in this range.
+                let block_meta = download_blocks(
+                    client,
+                    fsblockdb_root,
+                    db_cache,
+                    scan_range,
+                    shutdown,
+                    #[cfg(feature = "tui")]
+                    tui_handle,
+                )
+                .await?;
+
+                if shutdown.requested() {
+                    return Ok(false);
+                }
+
+                let chain_state =
+                    download_chain_state(client, scan_range.block_range().start - 1)
+                        .await?;
+
+                // Scan the downloaded blocks and check for scanning errors that
+                // indicate the wallet's chain tip is out of sync with blockchain
+                // history.
+                let scan_ranges_updated = scan_blocks(
+                    params,
+                    fsblockdb_root,
+                    db_cache,
+                    db_data,
+                    &chain_state,
+                    scan_range,
+                    #[cfg(feature = "tui")]
+                    tui_handle,
+                    #[cfg(feature = "tui")]
+                    _chain_tip,
+                )?;
+
+                // Delete the now-scanned blocks, because keeping the entire chain
+                // in CompactBlock files on disk is horrendous for the filesystem.
+                block_deletions.push(delete_cached_blocks(fsblockdb_root, block_meta));
+
+                if scan_ranges_updated {
+                    // The suggested scan ranges have been updated, so we re-request.
+                    scan_ranges = db_data.suggest_scan_ranges()?;
+                    #[cfg(feature = "tui")]
+                    if let Some(handle) = tui_handle {
+                        if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
+                            // TUI exited.
+                            return Ok(false);
+                        }
+                    }
+                    if shutdown.requested() {
+                        return Ok(false);
+                    }
+                } else {
+                    // At this point, the cache and scanned data are locally
+                    // consistent (though not necessarily consistent with the
+                    // latest chain tip - this would be discovered the next time
+                    // this codepath is executed after new blocks are received) so
+                    // we can break out of the loop.
+                    break;
+                }
+            }
+            _ => {
+                // Nothing to verify; break out of the loop
+                break;
+            }
+        }
+    }
+
+    // 7) Loop over the remaining suggested scan ranges, retrieving the requested data
+    //    and calling `scan_cached_blocks` on each range.
+    let scan_ranges = db_data.suggest_scan_ranges()?;
+    debug!("Suggested ranges: {:?}", scan_ranges);
+    #[cfg(feature = "tui")]
+    if let Some(handle) = tui_handle {
+        if handle.set_scan_ranges(&scan_ranges, _chain_tip) {
+            // TUI exited.
+            return Ok(false);
+        }
+    }
+    if shutdown.requested() {
+        return Ok(false);
+    }
+    for scan_range in scan_ranges.into_iter().flat_map(|r| {
+        // Limit the number of blocks we download and scan at any one time.
+        (0..).scan(r, |acc, _| {
+            if acc.is_empty() {
+                None
+            } else if let Some((cur, next)) =
+                acc.split_at(acc.block_range().start + BATCH_SIZE)
+            {
+                *acc = next;
+                Some(cur)
+            } else {
+                let cur = acc.clone();
+                let end = acc.block_range().end;
+                *acc = ScanRange::from_parts(end..end, acc.priority());
+                Some(cur)
+            }
+        })
+    }) {
+        // Download the blocks in `scan_range` into the block source.
+        let block_meta = download_blocks(
+            client,
+            fsblockdb_root,
+            db_cache,
+            &scan_range,
+            shutdown,
+            #[cfg(feature = "tui")]
+            tui_handle,
+        )
+        .await?;
+
+        if shutdown.requested() {
+            return Ok(false);
+        }
+
+        let chain_state =
+            download_chain_state(client, scan_range.block_range().start - 1).await?;
+
+        // Scan the downloaded blocks.
+        let scan_ranges_updated = scan_blocks(
+            params,
+            fsblockdb_root,
+            db_cache,
+            db_data,
+            &chain_state,
+            &scan_range,
+            #[cfg(feature = "tui")]
+            tui_handle,
+            #[cfg(feature = "tui")]
+            _chain_tip,
+        )?;
+
+        // Delete the now-scanned blocks.
+        block_deletions.push(delete_cached_blocks(fsblockdb_root, block_meta));
+
+        if scan_ranges_updated || shutdown.requested() {
+            // The suggested scan ranges have been updated (either due to a continuity
+            // error or because a higher priority range has been added).
+            info!("Waiting for cached blocks to be deleted...");
+            for deletion in block_deletions {
+                deletion.await?;
+            }
+            return Ok(!shutdown.requested());
+        }
+    }
+
+    info!("Waiting for cached blocks to be deleted...");
+    for deletion in block_deletions {
+        deletion.await?;
+    }
+    Ok(false)
+}
+
+async fn update_subtree_roots<W>(
+    client: &mut CompactTxStreamerClient<Channel>,
+    db_data: &mut W,
+) -> Result<(), anyhow::Error>
+where
+    W: WalletCommitmentTrees,
+    <W as WalletCommitmentTrees>::Error: std::error::Error + Sync + Send + 'static,
+{
     let mut request = service::GetSubtreeRootsArg::default();
     request.set_shielded_protocol(service::ShieldedProtocol::Sapling);
     let sapling_roots: Vec<CommitmentTreeRoot<sapling::Node>> = client
@@ -386,10 +479,14 @@ async fn update_subtree_roots<P: Parameters>(
     Ok(())
 }
 
-async fn update_chain_tip<P: Parameters>(
+async fn update_chain_tip<W>(
     client: &mut CompactTxStreamerClient<Channel>,
-    db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
-) -> Result<BlockHeight, anyhow::Error> {
+    db_data: &mut W,
+) -> Result<BlockHeight, anyhow::Error>
+where
+    W: WalletWrite,
+    <W as WalletRead>::Error: std::error::Error + Sync + Send + 'static,
+{
     let tip_height: BlockHeight = client
         .get_latest_block(service::ChainSpec::default())
         .await?
@@ -513,16 +610,22 @@ fn delete_cached_blocks(fsblockdb_root: &Path, block_meta: Vec<BlockMeta>) -> Jo
 ///
 /// Returns `true` if scanning these blocks materially changed the suggested scan ranges.
 #[allow(clippy::too_many_arguments)]
-fn scan_blocks<P: Parameters + Send + 'static>(
+fn scan_blocks<P: Parameters + Send + 'static, W>(
     params: &P,
     fsblockdb_root: &Path,
     db_cache: &mut FsBlockDb,
-    db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
+    db_data: &mut W,
     initial_chain_state: &ChainState,
     scan_range: &ScanRange,
     #[cfg(feature = "tui")] tui_handle: Option<&defrag::AppHandle>,
     #[cfg(feature = "tui")] chain_tip: BlockHeight,
-) -> Result<bool, anyhow::Error> {
+) -> Result<bool, anyhow::Error>
+where
+    W: WalletRead + WalletWrite + WalletCommitmentTrees,
+    W::AccountId: subtle::ConditionallySelectable + Default + Send + 'static,
+    <W as WalletRead>::Error: std::error::Error + Sync + Send + 'static,
+    <W as WalletCommitmentTrees>::Error: std::error::Error + Sync + Send + 'static,
+{
     info!("Scanning {}", scan_range);
     #[cfg(feature = "tui")]
     if let Some(handle) = tui_handle {
@@ -632,13 +735,18 @@ fn scan_blocks<P: Parameters + Send + 'static>(
 ///
 /// [a comment in the Android SDK]: https://github.com/Electric-Coin-Company/zcash-android-wallet-sdk/blob/855204fc8ae4057fdac939f98df4aa38c8e662f1/sdk-lib/src/main/java/cash/z/ecc/android/sdk/block/processor/CompactBlockProcessor.kt#L979-L991
 #[cfg(feature = "transparent-inputs")]
-async fn refresh_utxos<P: Parameters>(
+async fn refresh_utxos<P: Parameters, W>(
     params: &P,
     client: &mut CompactTxStreamerClient<Channel>,
-    db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
-    account_id: AccountUuid,
+    db_data: &mut W,
+    account_id: W::AccountId,
     start_height: BlockHeight,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), anyhow::Error>
+where
+    W: WalletRead + WalletWrite,
+    W::AccountId: std::fmt::Debug,
+    <W as WalletRead>::Error: std::error::Error + Sync + Send + 'static,
+{
     let addresses = db_data
         .get_transparent_receivers(account_id, true, true)?
         .into_keys()

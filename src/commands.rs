@@ -2,7 +2,6 @@ use anyhow::anyhow;
 use clap::Args;
 use uuid::Uuid;
 use zcash_client_backend::data_api::WalletRead;
-use zcash_client_sqlite::AccountUuid;
 
 pub(crate) mod create_multisig_address;
 pub(crate) mod inspect;
@@ -15,9 +14,19 @@ pub(crate) mod keystone;
 
 #[derive(Debug, Args)]
 pub(crate) struct Wallet {
-    /// Path to the wallet directory
+    /// Path to the wallet directory (for sqlite block cache and config)
     #[arg(short, long)]
     pub(crate) wallet_dir: Option<String>,
+
+    /// Database backend: "sqlite" (default) or a postgres URL like "postgres://user:pass@host:port/db"
+    #[arg(long, default_value = "sqlite")]
+    #[cfg(feature = "postgres")]
+    pub(crate) database: String,
+
+    /// Wallet UUID (for postgres multi-wallet; auto-selected if only one exists)
+    #[arg(long)]
+    #[cfg(feature = "postgres")]
+    pub(crate) wallet_id: Option<Uuid>,
 
     #[command(subcommand)]
     pub(crate) command: wallet::Command,
@@ -54,15 +63,16 @@ pub(crate) struct Keystone {
     pub(crate) command: keystone::Command,
 }
 
-pub(crate) fn select_account<DbT: WalletRead<AccountId = AccountUuid>>(
+pub(crate) fn select_account<DbT: WalletRead>(
     db_data: &DbT,
     account_uuid: Option<Uuid>,
+    from_uuid: impl Fn(Uuid) -> DbT::AccountId,
 ) -> Result<DbT::Account, anyhow::Error>
 where
     DbT::Error: std::error::Error + Sync + Send + 'static,
 {
     let account_id = match account_uuid {
-        Some(uuid) => Ok(AccountUuid::from_uuid(uuid)),
+        Some(uuid) => Ok(from_uuid(uuid)),
         None => {
             let account_ids = db_data.get_account_ids()?;
             match &account_ids[..] {

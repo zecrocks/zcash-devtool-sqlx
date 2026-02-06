@@ -17,6 +17,26 @@ const BLOCKS_FOLDER: &str = "blocks";
 const DATA_DB: &str = "data.sqlite";
 const TOR_DIR: &str = "tor";
 
+/// Database backend selection.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone)]
+pub(crate) enum DbBackend {
+    Sqlite,
+    Postgres(String),
+}
+
+#[cfg(feature = "postgres")]
+impl DbBackend {
+    pub(crate) fn parse(s: &str) -> Self {
+        if s == "sqlite" {
+            DbBackend::Sqlite
+        } else {
+            DbBackend::Postgres(s.to_string())
+        }
+    }
+
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum Network {
     #[default]

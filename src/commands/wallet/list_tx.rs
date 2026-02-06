@@ -13,6 +13,9 @@ use zcash_protocol::{
 
 use crate::{data::get_db_paths, ui::format_zec};
 
+#[cfg(feature = "postgres")]
+use crate::data::DbBackend;
+
 // Options accepted for the `list-tx` command
 #[derive(Debug, Args)]
 pub(crate) struct Command {
@@ -43,13 +46,28 @@ impl ListMode {
 }
 
 impl Command {
-    pub(crate) fn run(self, wallet_dir: Option<String>) -> anyhow::Result<()> {
-        let (_, db_data) = get_db_paths(wallet_dir);
+    pub(crate) fn run(
+        self,
+        wallet_dir: Option<String>,
+        #[cfg(feature = "postgres")] db_backend: DbBackend,
+        #[cfg(feature = "postgres")] pg_wallet_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
         let mode = self
             .mode
             .as_ref()
             .map_or(Ok(ListMode::Text), |s| ListMode::parse(s.as_str()))
             .map_err(|_| anyhow::Error::msg("Invalid printing mode"))?;
+
+        #[cfg(feature = "postgres")]
+        if let DbBackend::Postgres(ref url) = db_backend {
+            return self.run_postgres(url, pg_wallet_id, mode);
+        }
+
+        self.run_sqlite(wallet_dir, mode)
+    }
+
+    fn run_sqlite(self, wallet_dir: Option<String>, mode: ListMode) -> anyhow::Result<()> {
+        let (_, db_data) = get_db_paths(wallet_dir);
 
         let conn = Connection::open(db_data)?;
         rusqlite::vtab::array::load_module(&conn)?;
@@ -150,6 +168,150 @@ impl Command {
             },
         )? {
             let tx = row?;
+            tx.print(mode)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "postgres")]
+    fn run_postgres(
+        self,
+        url: &str,
+        pg_wallet_id: Option<Uuid>,
+        mode: ListMode,
+    ) -> anyhow::Result<()> {
+        use sqlx_core::row::Row;
+        use sqlx_postgres::PgRow;
+
+        let rt = tokio::runtime::Handle::current();
+        let pool = tokio::task::block_in_place(|| rt.block_on(zcash_client_sqlx::create_pool_default(url)))?;
+
+        let wallet_id = match pg_wallet_id {
+            Some(uuid) => uuid,
+            None => {
+                let wallets = tokio::task::block_in_place(|| rt.block_on(
+                    zcash_client_sqlx::WalletDb::<zcash_protocol::consensus::Network>::list_wallets_async(&pool),
+                ))?;
+                match &wallets[..] {
+                    [] => return Err(anyhow!("No wallets found.")),
+                    [w] => w.id.expose_uuid(),
+                    _ => return Err(anyhow!("Multiple wallets found. Please specify --wallet-id.")),
+                }
+            }
+        };
+
+        match mode {
+            ListMode::Text => {
+                println!("Transactions:");
+            }
+            ListMode::Csv => {
+                println!(
+                    "Date,Action,Symbol,Volume,Currency,Account,Total,Price,Fee,FeeCurrency,Memo"
+                );
+            }
+        }
+
+        let tx_rows: Vec<PgRow> = tokio::task::block_in_place(|| rt.block_on(
+            sqlx_core::query::query(
+                "SELECT mined_height,
+                    txid,
+                    expiry_height,
+                    account_balance_delta::BIGINT AS account_balance_delta,
+                    fee_paid,
+                    sent_note_count::BIGINT AS sent_note_count,
+                    received_note_count::BIGINT AS received_note_count,
+                    memo_count::BIGINT AS memo_count,
+                    block_time,
+                    expired_unmined,
+                    COALESCE(
+                        mined_height,
+                        CASE WHEN expiry_height = 0 THEN NULL ELSE expiry_height END
+                    ) AS sort_height
+                FROM v_transactions
+                WHERE wallet_id = $1
+                  AND ($2::uuid IS NULL OR account_uuid = $2)
+                ORDER BY sort_height ASC NULLS LAST",
+            )
+            .bind(wallet_id)
+            .bind(self.account_id)
+            .fetch_all(&pool),
+        ))?;
+
+        for row in &tx_rows {
+            let txid: Vec<u8> = row.get("txid");
+            let mined_height: Option<i64> = row.get("mined_height");
+            let expiry_height: Option<i64> = row.get("expiry_height");
+            let account_balance_delta: Option<i64> = row.get("account_balance_delta");
+            let fee_paid: Option<i64> = row.get("fee_paid");
+            let sent_note_count: Option<i64> = row.get("sent_note_count");
+            let received_note_count: Option<i64> = row.get("received_note_count");
+            let memo_count: Option<i64> = row.get("memo_count");
+            let block_time: Option<i64> = row.get("block_time");
+            let expired_unmined: Option<bool> = row.get("expired_unmined");
+
+            let output_rows: Vec<PgRow> = tokio::task::block_in_place(|| rt.block_on(
+                sqlx_core::query::query(
+                    "SELECT
+                        vo.output_pool,
+                        vo.output_index,
+                        vo.from_account_uuid,
+                        fa.name AS from_account_name,
+                        vo.to_account_uuid,
+                        ta.name AS to_account_name,
+                        vo.to_address,
+                        vo.value,
+                        vo.is_change,
+                        vo.memo
+                     FROM v_tx_outputs vo
+                     LEFT OUTER JOIN accounts fa ON vo.from_account_uuid = fa.uuid
+                     LEFT OUTER JOIN accounts ta ON vo.to_account_uuid = ta.uuid
+                     WHERE vo.wallet_id = $1 AND vo.txid = $2",
+                )
+                .bind(wallet_id)
+                .bind(&txid)
+                .fetch_all(&pool),
+            ))?;
+
+            let tx_outputs = output_rows
+                .iter()
+                .map(|out_row| {
+                    let from_account_name: Option<String> = out_row.get("from_account_name");
+                    let to_account_name: Option<String> = out_row.get("to_account_name");
+                    let from_uuid: Option<Uuid> = out_row.get("from_account_uuid");
+                    let to_uuid: Option<Uuid> = out_row.get("to_account_uuid");
+                    let pool_code: i32 = out_row.get("output_pool");
+                    let output_index: i32 = out_row.get("output_index");
+                    let value: Option<i64> = out_row.get("value");
+                    let is_change: Option<bool> = out_row.get("is_change");
+                    let memo: Option<Vec<u8>> = out_row.get("memo");
+
+                    WalletTxOutput::new(
+                        pool_code as i64,
+                        output_index as u32,
+                        from_uuid.map(|uuid| (uuid, from_account_name)),
+                        to_uuid.map(|uuid| (uuid, to_account_name)),
+                        out_row.get("to_address"),
+                        value.unwrap_or(0),
+                        is_change.unwrap_or(false),
+                        memo,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let tx = WalletTx::from_parts(
+                mined_height.map(|h| h as u32),
+                txid,
+                expiry_height.map(|h| h as u32),
+                account_balance_delta.unwrap_or(0),
+                fee_paid.map(|f| f as u64),
+                sent_note_count.unwrap_or(0) as usize,
+                received_note_count.unwrap_or(0) as usize,
+                memo_count.unwrap_or(0) as usize,
+                block_time,
+                expired_unmined.unwrap_or(false),
+                tx_outputs,
+            )?;
             tx.print(mode)?;
         }
 
