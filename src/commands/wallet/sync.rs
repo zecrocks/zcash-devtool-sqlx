@@ -60,7 +60,7 @@ use crate::tui::Tui;
 #[cfg(feature = "tui")]
 mod defrag;
 
-const BATCH_SIZE: u32 = 10_000;
+pub(crate) const BATCH_SIZE: u32 = 10_000;
 
 // Options accepted for the `sync` command
 #[derive(Debug, Args)]
@@ -341,7 +341,7 @@ impl Command {
     }
 }
 
-async fn update_subtree_roots<P: Parameters>(
+pub(crate) async fn update_subtree_roots<P: Parameters>(
     client: &mut CompactTxStreamerClient<Channel>,
     db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
 ) -> Result<(), anyhow::Error> {
@@ -386,7 +386,7 @@ async fn update_subtree_roots<P: Parameters>(
     Ok(())
 }
 
-async fn update_chain_tip<P: Parameters>(
+pub(crate) async fn update_chain_tip<P: Parameters>(
     client: &mut CompactTxStreamerClient<Channel>,
     db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
 ) -> Result<BlockHeight, anyhow::Error> {
@@ -405,7 +405,7 @@ async fn update_chain_tip<P: Parameters>(
     Ok(tip_height)
 }
 
-async fn download_blocks(
+pub(crate) async fn download_blocks(
     client: &mut CompactTxStreamerClient<Channel>,
     fsblockdb_root: &Path,
     db_cache: &FsBlockDb,
@@ -483,7 +483,7 @@ async fn download_blocks(
     Ok(block_meta)
 }
 
-async fn download_chain_state(
+pub(crate) async fn download_chain_state(
     client: &mut CompactTxStreamerClient<Channel>,
     block_height: BlockHeight,
 ) -> Result<ChainState, anyhow::Error> {
@@ -497,7 +497,7 @@ async fn download_chain_state(
     Ok(tree_state.into_inner().to_chain_state()?)
 }
 
-fn delete_cached_blocks(fsblockdb_root: &Path, block_meta: Vec<BlockMeta>) -> JoinHandle<()> {
+pub(crate) fn delete_cached_blocks(fsblockdb_root: &Path, block_meta: Vec<BlockMeta>) -> JoinHandle<()> {
     let fsblockdb_root = fsblockdb_root.to_owned();
     tokio::spawn(async move {
         for meta in block_meta {
@@ -513,7 +513,7 @@ fn delete_cached_blocks(fsblockdb_root: &Path, block_meta: Vec<BlockMeta>) -> Jo
 ///
 /// Returns `true` if scanning these blocks materially changed the suggested scan ranges.
 #[allow(clippy::too_many_arguments)]
-fn scan_blocks<P: Parameters + Send + 'static>(
+pub(crate) fn scan_blocks<P: Parameters + Send + 'static>(
     params: &P,
     fsblockdb_root: &Path,
     db_cache: &mut FsBlockDb,
@@ -632,7 +632,7 @@ fn scan_blocks<P: Parameters + Send + 'static>(
 ///
 /// [a comment in the Android SDK]: https://github.com/Electric-Coin-Company/zcash-android-wallet-sdk/blob/855204fc8ae4057fdac939f98df4aa38c8e662f1/sdk-lib/src/main/java/cash/z/ecc/android/sdk/block/processor/CompactBlockProcessor.kt#L979-L991
 #[cfg(feature = "transparent-inputs")]
-async fn refresh_utxos<P: Parameters>(
+pub(crate) async fn refresh_utxos<P: Parameters>(
     params: &P,
     client: &mut CompactTxStreamerClient<Channel>,
     db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,

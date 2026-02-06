@@ -7,6 +7,7 @@ use zcash_client_sqlite::AccountUuid;
 pub(crate) mod create_multisig_address;
 pub(crate) mod inspect;
 pub(crate) mod pczt;
+pub(crate) mod serve;
 pub(crate) mod wallet;
 pub(crate) mod zip48;
 

@@ -17,6 +17,7 @@ mod data;
 mod error;
 mod helpers;
 mod remote;
+mod server;
 mod socks;
 mod ui;
 
@@ -57,6 +58,9 @@ pub(crate) enum Command {
     Keystone(commands::Keystone),
 
     CreateMultisigAddress(commands::create_multisig_address::Command),
+
+    /// Run the UFVK indexer HTTP daemon
+    Serve(commands::serve::Command),
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -228,11 +232,12 @@ fn main() -> Result<(), anyhow::Error> {
             },
 
             Command::CreateMultisigAddress(command) => command.run(),
+            Command::Serve(command) => command.run().await,
         }
     })
 }
 
-struct ShutdownListener {
+pub(crate) struct ShutdownListener {
     signal_rx: tokio::sync::oneshot::Receiver<()>,
     #[cfg(feature = "tui")]
     tui_tx: Option<tokio::sync::oneshot::Sender<()>>,

@@ -21,7 +21,7 @@ rusqlite = { version = "0.37", features = ["time"] }
 schemerz = "0.2"
 secp256k1 = { version = "0.29", features = ["serde"] }
 secrecy = "0.8"
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 time = "0.3"
 tokio = { version = "1.21.0", features = ["fs", "io-std", "macros", "rt-multi-thread", "signal"] }
 tokio-socks = "0.5"
@@ -31,7 +31,7 @@ tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Zcash
 orchard = { version = "0.12", default-features = false }
@@ -48,6 +48,11 @@ zcash_protocol = { version = "0.7", features = ["local-consensus"] }
 zcash_script = "0.4"
 zip32 = "0.2"
 zip321 = "0.6"
+
+# HTTP Server
+axum = { version = "0.8", features = ["json"] }
+axum-extra = { version = "0.10", features = ["query"] }
+tokio-util = "0.7"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "string", "unstable-styles"] }
@@ -95,7 +100,6 @@ shardtree = "0.6"
 crossterm = { version = "0.28", optional = true, features = ["event-stream"] }
 ratatui = { version = "0.29", optional = true }
 roaring = { version = "0.11", optional = true }
-tokio-util = { version = "0.7", optional = true }
 tui-logger = { version = "0.17", optional = true, features = ["tracing-support"] }
 
 [features]
@@ -109,7 +113,6 @@ tui = [
     "dep:crossterm",
     "dep:ratatui",
     "dep:roaring",
-    "dep:tokio-util",
     "dep:tui-logger",
 ]
 
