@@ -43,8 +43,6 @@ zcash_address = "0.10"
 zcash_client_backend = { version = "0.21", features = ["lightwalletd-tonic-tls-webpki-roots", "orchard", "pczt", "tor"] }
 zcash_client_sqlite = { version = "0.19", features = ["unstable", "orchard", "serde"] }
 zcash_client_sqlx = { path = "../zcash-client-sqlx", features = ["postgres", "orchard", "transparent-inputs"], optional = true }
-sqlx-core = { version = "0.8", default-features = false, optional = true }
-sqlx-postgres = { version = "0.8", default-features = false, features = ["uuid"], optional = true }
 zcash_keys = { version = "0.12", features = ["unstable", "orchard"] }
 zcash_primitives = "0.26"
 zcash_proofs = { version = "0.26", features = ["bundled-prover"] }
@@ -104,7 +102,7 @@ tui-logger = { version = "0.17", optional = true, features = ["tracing-support"]
 
 [features]
 default = ["transparent-inputs"]
-postgres = ["dep:zcash_client_sqlx", "dep:sqlx-core", "dep:sqlx-postgres"]
+postgres = ["dep:zcash_client_sqlx"]
 qr = ["dep:qrcode"]
 pczt-qr = ["dep:image", "dep:minicbor", "dep:nokhwa", "dep:qrcode", "dep:rqrr", "dep:ur"]
 transparent-inputs = [

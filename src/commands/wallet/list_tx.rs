@@ -181,25 +181,24 @@ impl Command {
         pg_wallet_id: Option<Uuid>,
         mode: ListMode,
     ) -> anyhow::Result<()> {
-        use sqlx_core::row::Row;
-        use sqlx_postgres::PgRow;
-
         let rt = tokio::runtime::Handle::current();
         let pool = tokio::task::block_in_place(|| rt.block_on(zcash_client_sqlx::create_pool_default(url)))?;
 
         let wallet_id = match pg_wallet_id {
-            Some(uuid) => uuid,
+            Some(uuid) => zcash_client_sqlx::WalletId::from_uuid(uuid),
             None => {
                 let wallets = tokio::task::block_in_place(|| rt.block_on(
                     zcash_client_sqlx::WalletDb::<zcash_protocol::consensus::Network>::list_wallets_async(&pool),
                 ))?;
                 match &wallets[..] {
                     [] => return Err(anyhow!("No wallets found.")),
-                    [w] => w.id.expose_uuid(),
+                    [w] => w.id,
                     _ => return Err(anyhow!("Multiple wallets found. Please specify --wallet-id.")),
                 }
             }
         };
+
+        let account_uuid = self.account_id.map(zcash_client_sqlx::AccountUuid::from_uuid);
 
         match mode {
             ListMode::Text => {
@@ -212,104 +211,42 @@ impl Command {
             }
         }
 
-        let tx_rows: Vec<PgRow> = tokio::task::block_in_place(|| rt.block_on(
-            sqlx_core::query::query(
-                "SELECT mined_height,
-                    txid,
-                    expiry_height,
-                    account_balance_delta::BIGINT AS account_balance_delta,
-                    fee_paid,
-                    sent_note_count::BIGINT AS sent_note_count,
-                    received_note_count::BIGINT AS received_note_count,
-                    memo_count::BIGINT AS memo_count,
-                    block_time,
-                    expired_unmined,
-                    COALESCE(
-                        mined_height,
-                        CASE WHEN expiry_height = 0 THEN NULL ELSE expiry_height END
-                    ) AS sort_height
-                FROM v_transactions
-                WHERE wallet_id = $1
-                  AND ($2::uuid IS NULL OR account_uuid = $2)
-                ORDER BY sort_height ASC NULLS LAST",
-            )
-            .bind(wallet_id)
-            .bind(self.account_id)
-            .fetch_all(&pool),
+        let tx_rows = tokio::task::block_in_place(|| rt.block_on(
+            zcash_client_sqlx::get_transactions(&pool, wallet_id, account_uuid),
         ))?;
 
         for row in &tx_rows {
-            let txid: Vec<u8> = row.get("txid");
-            let mined_height: Option<i64> = row.get("mined_height");
-            let expiry_height: Option<i64> = row.get("expiry_height");
-            let account_balance_delta: Option<i64> = row.get("account_balance_delta");
-            let fee_paid: Option<i64> = row.get("fee_paid");
-            let sent_note_count: Option<i64> = row.get("sent_note_count");
-            let received_note_count: Option<i64> = row.get("received_note_count");
-            let memo_count: Option<i64> = row.get("memo_count");
-            let block_time: Option<i64> = row.get("block_time");
-            let expired_unmined: Option<bool> = row.get("expired_unmined");
-
-            let output_rows: Vec<PgRow> = tokio::task::block_in_place(|| rt.block_on(
-                sqlx_core::query::query(
-                    "SELECT
-                        vo.output_pool,
-                        vo.output_index,
-                        vo.from_account_uuid,
-                        fa.name AS from_account_name,
-                        vo.to_account_uuid,
-                        ta.name AS to_account_name,
-                        vo.to_address,
-                        vo.value,
-                        vo.is_change,
-                        vo.memo
-                     FROM v_tx_outputs vo
-                     LEFT OUTER JOIN accounts fa ON vo.from_account_uuid = fa.uuid
-                     LEFT OUTER JOIN accounts ta ON vo.to_account_uuid = ta.uuid
-                     WHERE vo.wallet_id = $1 AND vo.txid = $2",
-                )
-                .bind(wallet_id)
-                .bind(&txid)
-                .fetch_all(&pool),
+            let output_rows = tokio::task::block_in_place(|| rt.block_on(
+                zcash_client_sqlx::get_transaction_outputs(&pool, wallet_id, &row.txid),
             ))?;
 
             let tx_outputs = output_rows
                 .iter()
                 .map(|out_row| {
-                    let from_account_name: Option<String> = out_row.get("from_account_name");
-                    let to_account_name: Option<String> = out_row.get("to_account_name");
-                    let from_uuid: Option<Uuid> = out_row.get("from_account_uuid");
-                    let to_uuid: Option<Uuid> = out_row.get("to_account_uuid");
-                    let pool_code: i32 = out_row.get("output_pool");
-                    let output_index: i32 = out_row.get("output_index");
-                    let value: Option<i64> = out_row.get("value");
-                    let is_change: Option<bool> = out_row.get("is_change");
-                    let memo: Option<Vec<u8>> = out_row.get("memo");
-
                     WalletTxOutput::new(
-                        pool_code as i64,
-                        output_index as u32,
-                        from_uuid.map(|uuid| (uuid, from_account_name)),
-                        to_uuid.map(|uuid| (uuid, to_account_name)),
-                        out_row.get("to_address"),
-                        value.unwrap_or(0),
-                        is_change.unwrap_or(false),
-                        memo,
+                        out_row.output_pool as i64,
+                        out_row.output_index as u32,
+                        out_row.from_account_uuid.map(|uuid| (uuid, out_row.from_account_name.clone())),
+                        out_row.to_account_uuid.map(|uuid| (uuid, out_row.to_account_name.clone())),
+                        out_row.to_address.clone(),
+                        out_row.value.unwrap_or(0),
+                        out_row.is_change.unwrap_or(false),
+                        out_row.memo.clone(),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
             let tx = WalletTx::from_parts(
-                mined_height.map(|h| h as u32),
-                txid,
-                expiry_height.map(|h| h as u32),
-                account_balance_delta.unwrap_or(0),
-                fee_paid.map(|f| f as u64),
-                sent_note_count.unwrap_or(0) as usize,
-                received_note_count.unwrap_or(0) as usize,
-                memo_count.unwrap_or(0) as usize,
-                block_time,
-                expired_unmined.unwrap_or(false),
+                row.mined_height.map(|h| h as u32),
+                row.txid.clone(),
+                row.expiry_height.map(|h| h as u32),
+                row.account_balance_delta.unwrap_or(0),
+                row.fee_paid.map(|f| f as u64),
+                row.sent_note_count.unwrap_or(0) as usize,
+                row.received_note_count.unwrap_or(0) as usize,
+                row.memo_count.unwrap_or(0) as usize,
+                row.block_time,
+                row.expired_unmined.unwrap_or(false),
                 tx_outputs,
             )?;
             tx.print(mode)?;
