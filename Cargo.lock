@@ -9050,6 +9050,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_sqlx"
 version = "0.1.0"
+source = "git+https://github.com/zecrocks/zcash-client-sqlx#5c464d8b61a722dcfa4292024eaf7c7374cb1203"
 dependencies = [
  "async-trait",
  "bip32",
