@@ -1,32 +1,120 @@
-# zcash-devtool
+# zcash-devtool with PostgreSQL support
 
-This repository contains a CLI app for working with Zcash transactions and the
-Zcash blockchain, including stateless Zcash wallet functionality based upon the
-`zcash_client_backend` and `zcash_client_sqlite` crates. It is built by
-developers, for developers for use in prototyping Zcash functionality, and
-should not be considered production-ready. The command-line API that this tool
-exposes can and will change at any time and without warning.
+A CLI app for working with Zcash transactions and the Zcash blockchain,
+including stateless wallet functionality. It supports both SQLite and PostgreSQL
+database backends.
 
 ## Security Warnings
 
 **DO NOT USE THIS IN PRODUCTION!!!**
 
-This app has not been written with security in mind. It does however have affordances
-such as encryption of the mnemonic seed phrases that should make it viable for small
-scale experimentation, at your own risk.
+This app has not been written with security in mind. It does however have
+affordances such as encryption of the mnemonic seed phrases that should make it
+viable for small scale experimentation, at your own risk.
 
-## Usage
+## Quick Start with PostgreSQL
 
-No binary artifacts are provided for this crate; it is generally used via
-`cargo run` as follows:
+This walkthrough uses the publicly-known Zec.rocks Node Reward Wallet UFVK
+to demonstrate the postgres backend.
+
+### Prerequisites
+
+- Rust toolchain (install via [rustup](https://rustup.rs))
+- PostgreSQL running locally
+
+### 1. Create a PostgreSQL database
+
+```
+createdb zcash_devtool
+```
+
+### 2. Build with postgres support
+
+```
+cargo build --release --features postgres
+```
+
+### 3. Initialize a view-only wallet
+
+Import the Zec.rocks Node Reward Wallet UFVK with birthday height 3066155.
+A local wallet directory (`-w`) is still needed for the block cache and Tor
+state, even when using postgres for the wallet database.
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  init-fvk \
+  --name "ZecRocks Node Rewards" \
+  --fvk "uview1fl9k4zu4p52u7mzkg3d93yyfh6xhqegcwh7nqadkl49d3gm47tl2cw50lguaveyg0yamm3lpymr4zfv56y4lqsfyacw49r2fz936z34pcy0wyt0vmdhp287gwh3vw4s3dcvd54wkju90548knm0hg6npsq8yasky705hxskp8c3h3s24h4dtwmxwmyt3ccf26qhcj3vwmglj652z7ug3py8k0rkl6x3wxrwjgs2ztu25280rr8jc47fc9ercw9azjud7m0cmahmf32tea8kdnyn0msgtq8lxneyucf5ht6dg779uk6mmaaweutx4h450slfffgjlf02p0k5kjydzgze0xhrdtv3kz6kncv9sfrn3rx7pmhk5yd22v8zxuz2wdk07q3c90yem3" \
+  --birthday 3066155 \
+  -s zecrocks
+```
+
+This prints a wallet UUID like `Created wallet: 3721d10c-eb66-4ee4-85a3-458de406688c`.
+
+### 4. Sync the wallet
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  sync -s zecrocks
+```
+
+The sync connects to the Zec.rocks lightwalletd server over Tor, downloads
+compact blocks, and scans them into the postgres database. Press Ctrl-C to
+stop; re-running `sync` resumes where it left off.
+
+### 5. Check balance
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  balance
+```
+
+### 6. List accounts
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  list-accounts
+```
+
+### 7. List transactions
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  list-tx
+```
+
+### Multi-wallet support
+
+The postgres backend supports multiple wallets in a single database. When only
+one wallet exists, it is selected automatically. With multiple wallets, specify
+which one to use:
+
+```
+cargo run --release --features postgres -- \
+  wallet -w /tmp/zcash-pg-test \
+  --database "postgres://localhost/zcash_devtool" \
+  --wallet-id "3721d10c-eb66-4ee4-85a3-458de406688c" \
+  balance
+```
+
+## SQLite Usage
+
+The default database backend is SQLite, which stores everything in the wallet
+directory.
 
 To obtain the help docs:
 ```
 cargo run --release -- --help
-```
-To obtain the help for a specific command (in this case, `init`)
-```
-cargo run --release -- --help init
 ```
 
 To create a new empty testnet wallet:
@@ -35,33 +123,25 @@ cargo run --release -- wallet -w <wallet_dir> init --name "<account_name>" -i <i
 cargo run --release -- wallet -w <wallet_dir> sync
 ```
 
-Note: The `-i` (identity) parameter specifies an age identity file for encrypting the mnemonic phrase. The file will be generated if it doesn't exist.
+Note: The `-i` (identity) parameter specifies an age identity file for
+encrypting the mnemonic phrase. The file will be generated if it doesn't exist.
 
-See the help docs for `init` for additional information, including for how to
-initialize a mainnet wallet. Initializing a mainnet wallet will require
-specifying a mainnet lightwallet server, e.g.
+For mainnet with a lightwallet server:
 ```
 cargo run --release -- wallet -w <wallet_dir> init --name "<account_name>" -i <identity_file> -n main -s zecrocks
 cargo run --release -- wallet -w <wallet_dir> sync -s zecrocks
 ```
 
-Whenever you update the `zcash_client_sqlite` dependency, in order to run
-necessary migrations:
+Whenever you update the `zcash_client_sqlite` dependency, run migrations:
 ```
 cargo run --release -- wallet -w <wallet_dir> upgrade
 ```
 
-If you want to run with debug or trace logging:
+### Debug logging
+
 ```
 RUST_LOG=debug cargo run --release -- wallet -w <wallet_dir> <command>
 ```
-### Video tutorial of Zcash Devtool
-Kris Nuttycombe (@nuttycom) presented this tool during ZconVI. The session is available
-on Youtube [here](https://www.youtube.com/watch?v=5gvQF5oFT8E)
-
-[![Youtube preview of the ZconVI presentation Zcash-devtool: the Zcash development multitool](https://img.youtube.com/vi/5gvQF5oFT8E/0.jpg)](https://www.youtube.com/watch?v=5gvQF5oFT8E)
-
-The code developed in this demo resulted in [this](https://github.com/zcash/zcash-devtool/pull/86) pull request.
 
 ## Documentation
 
