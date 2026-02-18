@@ -25,8 +25,8 @@ Master list of all registered UFVKs.
 | Column | Type | Purpose |
 |---|---|---|
 | `id` | TEXT (PK) | UUID |
-| `ufvk` | TEXT, UNIQUE | Full viewing key string |
-| `ufvk_hash` | TEXT, UNIQUE | SHA-256 for dedup |
+| `ufvk` | TEXT | Full viewing key string |
+| `ufvk_hash` | TEXT | SHA-256 for dedup |
 | `name` | TEXT, nullable | Optional user label |
 | `network` | TEXT | `"main"` or `"test"` (derived from UFVK decode) |
 | `birthday` | INTEGER | Start scan height |

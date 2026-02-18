@@ -42,8 +42,8 @@ impl WalletRegistry {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS watched_wallets (
                 id          TEXT PRIMARY KEY,
-                ufvk        TEXT NOT NULL UNIQUE,
-                ufvk_hash   TEXT NOT NULL UNIQUE,
+                ufvk        TEXT NOT NULL,
+                ufvk_hash   TEXT NOT NULL,
                 name        TEXT,
                 network     TEXT NOT NULL,
                 birthday    INTEGER NOT NULL,
