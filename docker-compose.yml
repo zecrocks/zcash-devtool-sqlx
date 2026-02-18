@@ -1,0 +1,27 @@
+services:
+  zcash-indexer:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${BIND_PORT:-8080}:8080"
+    volumes:
+      - zcash-data:/data
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+    command: >-
+      zcash-devtool serve
+      --bind 0.0.0.0:8080
+      --data-dir /data
+      --server ${ZCASH_SERVER:-zecrocks}
+      --testnet-server ${ZCASH_TESTNET_SERVER:-ecc}
+      --connection ${ZCASH_CONNECTION:-direct}
+      --sync-interval ${ZCASH_SYNC_INTERVAL:-60}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  zcash-data:

@@ -63,6 +63,53 @@ on Youtube [here](https://www.youtube.com/watch?v=5gvQF5oFT8E)
 
 The code developed in this demo resulted in [this](https://github.com/zcash/zcash-devtool/pull/86) pull request.
 
+## Docker Deployment
+
+The HTTP indexer service can be run via Docker Compose.
+
+### Quick Start
+
+```
+docker compose up -d
+curl http://localhost:8080/health
+```
+
+### Configuration
+
+All settings are configurable via environment variables or a `.env` file:
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIND_PORT` | `8080` | Host port to expose |
+| `RUST_LOG` | `info` | Log level (`debug`, `trace`, etc.) |
+| `ZCASH_SERVER` | `zecrocks` | Mainnet lightwalletd server |
+| `ZCASH_TESTNET_SERVER` | `ecc` | Testnet lightwalletd server |
+| `ZCASH_CONNECTION` | `direct` | Connection mode: `direct`, `tor`, or `socks5://host:port` |
+| `ZCASH_SYNC_INTERVAL` | `60` | Seconds between sync cycles |
+
+Example `.env` file:
+```
+RUST_LOG=debug
+ZCASH_SERVER=zecrocks
+BIND_PORT=9090
+```
+
+### Build Notes
+
+- The initial build compiles the full Zcash/librustzcash dependency tree and will take a long time. Subsequent rebuilds with only source changes are fast thanks to cached dependency layers.
+- Recommend at least 4 GB RAM for the Docker build.
+- Wallet data is persisted in a named Docker volume (`zcash-data`). It survives `docker compose down` and restarts.
+
+### Commands
+
+```
+docker compose build        # Build the image
+docker compose up -d        # Start in background
+docker compose logs -f      # Follow logs
+docker compose down         # Stop (data persists)
+docker compose down -v      # Stop and delete data volume
+```
+
 ## Documentation
 
 For a step-by-step guide for how to get started using these tools, see [this

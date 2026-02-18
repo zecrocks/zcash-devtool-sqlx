@@ -1,0 +1,7 @@
+target/
+local/
+tmp/
+zec_sqlite_wallet*
+.git/
+*.md
+LICENSE-*
