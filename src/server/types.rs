@@ -124,6 +124,7 @@ pub(crate) struct TransactionEntry {
     pub txid: String,
     pub mined_height: Option<u32>,
     pub block_time: Option<i64>,
+    pub confirmations: Option<u32>,
     pub account_balance_delta: i64,
     pub fee_paid: Option<u64>,
     pub sent_note_count: u64,

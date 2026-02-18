@@ -90,6 +90,14 @@ fn query_transactions(
         .query_row("SELECT COUNT(*) FROM v_transactions", [], |row| row.get(0))
         .map_err(|e| ApiError::Internal(format!("Failed to count transactions: {e}")))?;
 
+    let chain_tip: Option<u32> = conn
+        .query_row(
+            "SELECT MAX(height) FROM blocks",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
+
     let offset = (page.saturating_sub(1)) * per_page;
 
     let order = match sort {
@@ -225,10 +233,16 @@ fn query_transactions(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ApiError::Internal(format!("Failed to collect outputs: {e}")))?;
 
+        let confirmations = match (mined_height, chain_tip) {
+            (Some(h), Some(tip)) if tip >= h => Some(tip - h + 1),
+            _ => None,
+        };
+
         entries.push(TransactionEntry {
             txid: txid_hex,
             mined_height,
             block_time,
+            confirmations,
             account_balance_delta,
             fee_paid,
             sent_note_count,
