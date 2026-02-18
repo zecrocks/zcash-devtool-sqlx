@@ -13,7 +13,6 @@ use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tonic::{transport::Channel, Code};
 use tracing::{error, info, warn};
-use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
         chain::{
@@ -61,7 +60,7 @@ pub(crate) struct SyncManager {
     config: DaemonConfig,
     registry: Arc<Mutex<WalletRegistry>>,
     cancel_token: CancellationToken,
-    wallet_tokens: HashMap<Uuid, (CancellationToken, std::thread::JoinHandle<()>)>,
+    wallet_tokens: HashMap<String, (CancellationToken, std::thread::JoinHandle<()>)>,
 }
 
 impl SyncManager {
@@ -137,11 +136,11 @@ impl SyncManager {
 
     /// Check all stored JoinHandles and respawn any that have finished.
     fn check_and_respawn_dead_threads(&mut self) {
-        let dead_ids: Vec<Uuid> = self
+        let dead_ids: Vec<String> = self
             .wallet_tokens
             .iter()
             .filter(|(_, (_, handle))| handle.is_finished())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id.clone())
             .collect();
 
         for id in dead_ids {
@@ -157,7 +156,7 @@ impl SyncManager {
         }
     }
 
-    fn spawn_wallet_sync(&mut self, wallet_id: Uuid) {
+    fn spawn_wallet_sync(&mut self, wallet_id: String) {
         if self.wallet_tokens.contains_key(&wallet_id) {
             info!("Wallet {wallet_id} is already syncing");
             return;
@@ -170,8 +169,14 @@ impl SyncManager {
 
         // Use std::thread to avoid Send bounds on FsBlockDb/WalletDb.
         // Each wallet sync runs on its own OS thread with a single-threaded tokio runtime.
+        let thread_name = if wallet_id.len() >= 8 {
+            format!("sync-{}", &wallet_id[..8])
+        } else {
+            format!("sync-{wallet_id}")
+        };
+        let thread_wallet_id = wallet_id.clone();
         let handle = match std::thread::Builder::new()
-            .name(format!("sync-{}", &wallet_id.to_string()[..8]))
+            .name(thread_name)
             .spawn(move || {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -180,12 +185,12 @@ impl SyncManager {
                     {
                         Ok(rt) => rt,
                         Err(e) => {
-                            error!("Failed to build sync runtime for wallet {wallet_id}: {e}");
+                            error!("Failed to build sync runtime for wallet {thread_wallet_id}: {e}");
                             return;
                         }
                     };
                     rt.block_on(wallet_sync_loop(
-                        wallet_id,
+                        &thread_wallet_id,
                         config,
                         registry,
                         thread_token,
@@ -199,7 +204,7 @@ impl SyncManager {
                     } else {
                         "unknown panic".to_string()
                     };
-                    error!("Sync thread for wallet {wallet_id} panicked: {msg}");
+                    error!("Sync thread panicked: {msg}");
                 }
             }) {
             Ok(handle) => handle,
@@ -209,14 +214,14 @@ impl SyncManager {
             }
         };
 
+        info!("Started sync task for wallet {wallet_id}");
         self.wallet_tokens
             .insert(wallet_id, (child_token, handle));
-        info!("Started sync task for wallet {wallet_id}");
     }
 }
 
 async fn wallet_sync_loop(
-    wallet_id: Uuid,
+    wallet_id: &str,
     config: DaemonConfig,
     registry: Arc<Mutex<WalletRegistry>>,
     cancel_token: CancellationToken,
@@ -263,7 +268,7 @@ async fn wallet_sync_loop(
 }
 
 async fn run_sync_cycle(
-    wallet_id: Uuid,
+    wallet_id: &str,
     config: &DaemonConfig,
     registry: &Arc<Mutex<WalletRegistry>>,
 ) -> Result<(), anyhow::Error> {

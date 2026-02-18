@@ -1,6 +1,4 @@
-use anyhow::anyhow;
 use rusqlite::{params, Connection, OptionalExtension};
-use uuid::Uuid;
 
 use super::types::{SyncStatusEntry, UfvkSummary};
 
@@ -12,7 +10,7 @@ pub(crate) struct WalletRegistry {
 /// A wallet with its sync status, as returned by `all_sync_statuses`.
 #[derive(Debug, Clone)]
 pub(crate) struct WalletSyncInfo {
-    pub id: Uuid,
+    pub id: String,
     pub name: Option<String>,
     pub network: String,
     pub sync: SyncStatusEntry,
@@ -21,7 +19,7 @@ pub(crate) struct WalletSyncInfo {
 /// A row from the watched_wallets table.
 #[derive(Debug, Clone)]
 pub(crate) struct WatchedWallet {
-    pub id: Uuid,
+    pub id: String,
     pub ufvk: String,
     pub name: Option<String>,
     pub network: String,
@@ -62,7 +60,10 @@ impl WalletRegistry {
                 error_message       TEXT,
                 last_sync_at        TEXT,
                 sync_progress       REAL
-            );",
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ufvk_birthday
+                ON watched_wallets(ufvk_hash, birthday) WHERE deleted_at IS NULL;",
         )?;
         Ok(())
     }
@@ -71,7 +72,7 @@ impl WalletRegistry {
     #[allow(clippy::too_many_arguments)]
     pub fn insert_wallet(
         &self,
-        id: Uuid,
+        id: &str,
         ufvk: &str,
         ufvk_hash: &str,
         name: Option<&str>,
@@ -82,48 +83,26 @@ impl WalletRegistry {
         self.conn.execute(
             "INSERT INTO watched_wallets (id, ufvk, ufvk_hash, name, network, birthday, wallet_dir)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id.to_string(),
-                ufvk,
-                ufvk_hash,
-                name,
-                network,
-                birthday,
-                wallet_dir
-            ],
+            params![id, ufvk, ufvk_hash, name, network, birthday, wallet_dir],
         )?;
         self.conn.execute(
             "INSERT INTO sync_state (wallet_id) VALUES (?1)",
-            params![id.to_string()],
+            params![id],
         )?;
         Ok(())
     }
 
-    /// Check if a UFVK hash already exists (and is not deleted).
-    pub fn find_by_ufvk_hash(&self, ufvk_hash: &str) -> Result<Option<Uuid>, anyhow::Error> {
-        let id: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT id FROM watched_wallets WHERE ufvk_hash = ?1 AND deleted_at IS NULL",
-                params![ufvk_hash],
-                |row| row.get(0),
-            )
-            .optional()?;
-        id.map(|s| Uuid::parse_str(&s).map_err(|e| anyhow!("{e}")))
-            .transpose()
-    }
-
     /// Get a single wallet by ID.
-    pub fn get_wallet(&self, id: Uuid) -> Result<Option<WatchedWallet>, anyhow::Error> {
+    pub fn get_wallet(&self, id: &str) -> Result<Option<WatchedWallet>, anyhow::Error> {
         let row = self
             .conn
             .query_row(
                 "SELECT id, ufvk, name, network, birthday, wallet_dir, created_at
                  FROM watched_wallets WHERE id = ?1 AND deleted_at IS NULL",
-                params![id.to_string()],
+                params![id],
                 |row| {
                     Ok(WatchedWallet {
-                        id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                        id: row.get(0)?,
                         ufvk: row.get(1)?,
                         name: row.get(2)?,
                         network: row.get(3)?,
@@ -164,7 +143,7 @@ impl WalletRegistry {
         let rows = stmt
             .query_map(params![per_page, offset], |row| {
                 Ok(UfvkSummary {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                    id: row.get(0)?,
                     name: row.get(1)?,
                     network: row.get(2)?,
                     birthday: row.get(3)?,
@@ -189,7 +168,7 @@ impl WalletRegistry {
     /// Get sync state for a wallet.
     pub fn get_sync_state(
         &self,
-        wallet_id: Uuid,
+        wallet_id: &str,
     ) -> Result<Option<SyncStatusEntry>, anyhow::Error> {
         let entry = self
             .conn
@@ -197,7 +176,7 @@ impl WalletRegistry {
                 "SELECT status, last_synced_height, chain_tip_height,
                         sync_progress, error_message, last_sync_at
                  FROM sync_state WHERE wallet_id = ?1",
-                params![wallet_id.to_string()],
+                params![wallet_id],
                 |row| {
                     Ok(SyncStatusEntry {
                         status: row.get(0)?,
@@ -216,7 +195,7 @@ impl WalletRegistry {
     /// Update sync state for a wallet.
     pub fn update_sync_state(
         &self,
-        wallet_id: Uuid,
+        wallet_id: &str,
         status: &str,
         last_synced_height: Option<u32>,
         chain_tip_height: Option<u32>,
@@ -233,7 +212,7 @@ impl WalletRegistry {
                 last_sync_at = datetime('now')
              WHERE wallet_id = ?1",
             params![
-                wallet_id.to_string(),
+                wallet_id,
                 status,
                 last_synced_height,
                 chain_tip_height,
@@ -245,23 +224,21 @@ impl WalletRegistry {
     }
 
     /// Soft-delete a wallet.
-    pub fn soft_delete(&self, id: Uuid) -> Result<bool, anyhow::Error> {
+    pub fn soft_delete(&self, id: &str) -> Result<bool, anyhow::Error> {
         let affected = self.conn.execute(
             "UPDATE watched_wallets SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL",
-            params![id.to_string()],
+            params![id],
         )?;
         Ok(affected > 0)
     }
 
     /// List all active (non-deleted) wallet IDs.
-    pub fn list_active_wallet_ids(&self) -> Result<Vec<Uuid>, anyhow::Error> {
+    pub fn list_active_wallet_ids(&self) -> Result<Vec<String>, anyhow::Error> {
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM watched_wallets WHERE deleted_at IS NULL")?;
         let ids = stmt
-            .query_map([], |row| {
-                Ok(Uuid::parse_str(&row.get::<_, String>(0)?).unwrap())
-            })?
+            .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
@@ -310,7 +287,7 @@ impl WalletRegistry {
         let rows = stmt
             .query_map(params![per_page, offset], |row| {
                 Ok(WalletSyncInfo {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                    id: row.get(0)?,
                     name: row.get::<_, Option<String>>(1)?,
                     network: row.get::<_, String>(2)?,
                     sync: SyncStatusEntry {

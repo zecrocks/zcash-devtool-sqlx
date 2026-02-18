@@ -26,9 +26,9 @@ pub(crate) struct DaemonConfig {
 #[derive(Debug)]
 pub(crate) enum SyncCommand {
     /// Start syncing a wallet with the given ID.
-    StartSync(uuid::Uuid),
+    StartSync(String),
     /// Stop syncing a wallet with the given ID.
-    StopSync(uuid::Uuid),
+    StopSync(String),
 }
 
 /// Shared application state, passed to all HTTP handlers via axum's State extractor.

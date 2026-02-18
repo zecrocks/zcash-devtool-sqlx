@@ -5,7 +5,6 @@ use axum::{
     Json,
 };
 use rand::rngs::OsRng;
-use uuid::Uuid;
 use zcash_client_backend::data_api::{Account, WalletWrite};
 use zcash_client_sqlite::{util::SystemClock, WalletDb};
 use zcash_keys::keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey};
@@ -24,15 +23,15 @@ use crate::{
 
 pub(crate) async fn generate_address(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     Json(req): Json<GenerateAddressRequest>,
 ) -> Result<Json<AddressResponse>, ApiError> {
     let (wallet, synced) = {
         let registry = state.registry.lock().await;
         let wallet = registry
-            .get_wallet(id)?
+            .get_wallet(&id)?
             .ok_or_else(|| ApiError::NotFound(format!("Wallet {id} not found")))?;
-        let sync_state = registry.get_sync_state(id)?;
+        let sync_state = registry.get_sync_state(&id)?;
         let synced = sync_state
             .as_ref()
             .map_or(false, |s| s.last_synced_height.is_some());
@@ -85,7 +84,7 @@ pub(crate) async fn generate_address(
         let address = ua.encode(&params);
         let diversifier_index: u128 = di.into();
         return Ok(Json(AddressResponse {
-            id,
+            id: id.clone(),
             address,
             diversifier_index,
         }));

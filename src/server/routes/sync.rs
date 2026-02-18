@@ -4,8 +4,6 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use uuid::Uuid;
-
 use crate::server::{
     error::ApiError,
     types::{PaginationParams, SyncOverviewResponse, SyncStatusEntry, SyncWalletStatus},
@@ -39,17 +37,17 @@ pub(crate) async fn sync_status(
 
 pub(crate) async fn wallet_sync_status(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
 ) -> Result<Json<SyncStatusEntry>, ApiError> {
     let registry = state.registry.lock().await;
 
     // Verify the wallet exists and is not deleted.
     registry
-        .get_wallet(id)?
+        .get_wallet(&id)?
         .ok_or_else(|| ApiError::NotFound(format!("wallet {id} not found")))?;
 
     let entry = registry
-        .get_sync_state(id)?
+        .get_sync_state(&id)?
         .ok_or_else(|| ApiError::NotFound(format!("sync state for wallet {id} not found")))?;
 
     Ok(Json(entry))

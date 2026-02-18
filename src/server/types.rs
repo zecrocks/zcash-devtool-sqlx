@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ── Request types ──
 
@@ -55,7 +54,7 @@ pub(crate) struct WalletCounts {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct RegisterUfvkResponse {
-    pub id: Uuid,
+    pub id: String,
     pub network: String,
     pub birthday: u32,
     pub name: Option<String>,
@@ -71,7 +70,7 @@ pub(crate) struct UfvkListResponse {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct UfvkSummary {
-    pub id: Uuid,
+    pub id: String,
     pub name: Option<String>,
     pub network: String,
     pub birthday: u32,
@@ -81,7 +80,7 @@ pub(crate) struct UfvkSummary {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct UfvkDetailResponse {
-    pub id: Uuid,
+    pub id: String,
     pub ufvk: String,
     pub name: Option<String>,
     pub network: String,
@@ -102,7 +101,7 @@ pub(crate) struct SyncStatusEntry {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct BalanceResponse {
-    pub id: Uuid,
+    pub id: String,
     pub chain_tip_height: Option<u32>,
     pub scan_progress: Option<f64>,
     pub total: u64,
@@ -155,7 +154,7 @@ pub(crate) struct SyncOverviewResponse {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SyncWalletStatus {
-    pub id: Uuid,
+    pub id: String,
     pub name: Option<String>,
     pub network: String,
     #[serde(flatten)]
@@ -164,7 +163,7 @@ pub(crate) struct SyncWalletStatus {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DeleteResponse {
-    pub id: Uuid,
+    pub id: String,
     pub deleted: bool,
 }
 
@@ -185,7 +184,7 @@ pub(crate) struct GenerateAddressRequest {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AddressResponse {
-    pub id: Uuid,
+    pub id: String,
     pub address: String,
     pub diversifier_index: u128,
 }

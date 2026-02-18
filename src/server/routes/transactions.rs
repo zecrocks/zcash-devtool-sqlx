@@ -6,7 +6,6 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use rusqlite::{named_params, Connection};
-use uuid::Uuid;
 use zcash_protocol::memo::{Memo, MemoBytes};
 
 use crate::server::{
@@ -20,14 +19,14 @@ use crate::server::{
 
 pub(crate) async fn get_transactions(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<TransactionListResponse>, ApiError> {
     // Look up the wallet from the registry
     let wallet = {
         let registry = state.registry.lock().await;
         registry
-            .get_wallet(id)?
+            .get_wallet(&id)?
             .ok_or_else(|| ApiError::NotFound(format!("Wallet {id} not found")))?
     };
 

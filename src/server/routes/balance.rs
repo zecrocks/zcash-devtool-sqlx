@@ -4,7 +4,6 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use uuid::Uuid;
 use zcash_client_backend::data_api::{wallet::ConfirmationsPolicy, Account as _, WalletRead};
 use zcash_client_sqlite::WalletDb;
 use zcash_protocol::consensus;
@@ -17,13 +16,13 @@ use crate::{
 
 pub(crate) async fn get_balance(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
     // Look up the wallet from the registry
     let wallet = {
         let registry = state.registry.lock().await;
         registry
-            .get_wallet(id)?
+            .get_wallet(&id)?
             .ok_or_else(|| ApiError::NotFound(format!("Wallet {id} not found")))?
     };
 

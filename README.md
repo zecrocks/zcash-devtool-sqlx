@@ -122,10 +122,10 @@ curl -X POST http://localhost:8080/ufvks \
   }'
 ```
 
-The response includes a wallet `id`. Use it to fetch transaction history once the wallet has synced:
+The response includes a deterministic wallet `id` derived from the UFVK and birthday height (last 36 chars of the UFVK + birthday). Use it to fetch transaction history once the wallet has synced:
 
 ```
-curl http://localhost:8080/ufvks/<wallet-id>/transactions
+curl http://localhost:8080/ufvks/rn3rx7pmhk5yd22v8zxuz2wdk07q3c90yem3-3066155/transactions
 ```
 
 ## Documentation
