@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use rand::rngs::OsRng;
 use tokio::sync::{mpsc, Mutex};
 use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use tonic::transport::Channel;
+use tonic::{transport::Channel, Code};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use zcash_client_backend::{
@@ -21,8 +21,8 @@ use zcash_client_backend::{
             CommitmentTreeRoot,
         },
         scanning::{ScanPriority, ScanRange},
-        wallet::ConfirmationsPolicy,
-        WalletCommitmentTrees, WalletRead, WalletWrite,
+        wallet::{decrypt_and_store_transaction, ConfirmationsPolicy},
+        TransactionDataRequest, TransactionStatus, WalletCommitmentTrees, WalletRead, WalletWrite,
     },
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient, BlockId},
 };
@@ -31,8 +31,8 @@ use zcash_client_sqlite::{
     util::SystemClock,
     FsBlockDb, FsBlockDbError, WalletDb,
 };
-use zcash_primitives::merkle_tree::HashSer;
-use zcash_protocol::consensus::{self, BlockHeight, Parameters};
+use zcash_primitives::{merkle_tree::HashSer, transaction::{Transaction, TxId}};
+use zcash_protocol::consensus::{self, BlockHeight, BranchId, Parameters};
 
 use crate::{
     data::{get_block_path, get_db_paths},
@@ -439,6 +439,153 @@ async fn run_sync_cycle(
 
         if scan_ranges_updated {
             return Ok(());
+        }
+    }
+
+    // 5. Enhance transactions (fetch full tx data, decrypt memos)
+    info!("Enhancing transactions for wallet {wallet_id}");
+    enhance_transactions(&mut client, &params, &mut db_data, chain_tip).await?;
+
+    Ok(())
+}
+
+// ── Transaction enhancement helpers ──
+// Ported from commands/wallet/enhance.rs, made generic over P: Parameters.
+
+fn parse_raw_transaction<P: Parameters>(
+    params: &P,
+    chain_tip: BlockHeight,
+    tx: service::RawTransaction,
+) -> Result<(Transaction, Option<BlockHeight>), anyhow::Error> {
+    let mined_height = (tx.height > 0 && tx.height <= u64::from(u32::MAX))
+        .then(|| BlockHeight::from_u32(u32::try_from(tx.height).unwrap()));
+
+    let tx = Transaction::read(
+        &tx.data[..],
+        // We assume unmined transactions are created with the current consensus branch ID.
+        BranchId::for_height(params, mined_height.unwrap_or(chain_tip)),
+    )?;
+
+    Ok((tx, mined_height))
+}
+
+async fn fetch_transaction<P: Parameters>(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &P,
+    chain_tip: BlockHeight,
+    txid: TxId,
+) -> Result<Option<(Transaction, Option<BlockHeight>)>, anyhow::Error> {
+    let request = service::TxFilter {
+        hash: txid.as_ref().to_vec(),
+        ..Default::default()
+    };
+
+    let raw_tx = match client.get_transaction(request).await {
+        Ok(response) => Ok(Some(response.into_inner())),
+        Err(status) => {
+            if status.code() == Code::NotFound {
+                Ok(None)
+            } else {
+                Err(status)
+            }
+        }
+    }?;
+
+    raw_tx
+        .map(|raw_tx| parse_raw_transaction(params, chain_tip, raw_tx))
+        .transpose()
+}
+
+async fn enhance_transactions<P: Parameters>(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &P,
+    db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
+    chain_tip: BlockHeight,
+) -> Result<(), anyhow::Error> {
+    let mut satisfied_requests = BTreeSet::new();
+    loop {
+        let mut new_request_encountered = false;
+        for data_request in db_data.transaction_data_requests()? {
+            if satisfied_requests.contains(&data_request) {
+                continue;
+            } else {
+                new_request_encountered = true;
+            }
+
+            info!("Fetching data for request {:?}", data_request);
+            match &data_request {
+                TransactionDataRequest::GetStatus(txid) => {
+                    let status = fetch_transaction(client, params, chain_tip, *txid)
+                        .await?
+                        .map_or(TransactionStatus::TxidNotRecognized, |(_, mined_height)| {
+                            mined_height.map_or(
+                                TransactionStatus::NotInMainChain,
+                                TransactionStatus::Mined,
+                            )
+                        });
+                    info!("Got status {:?}", status);
+                    db_data.set_transaction_status(*txid, status)?;
+                }
+                TransactionDataRequest::Enhancement(txid) => {
+                    match fetch_transaction(client, params, chain_tip, *txid).await? {
+                        None => {
+                            info!("Txid not recognized {:?}", txid);
+                            db_data.set_transaction_status(
+                                *txid,
+                                TransactionStatus::TxidNotRecognized,
+                            )?;
+                        }
+                        Some((tx, mined_height)) => {
+                            info!(
+                                "Enhancing tx {:?} with mined height {:?}",
+                                txid, mined_height
+                            );
+                            decrypt_and_store_transaction(params, db_data, &tx, mined_height)?;
+                        }
+                    }
+                }
+                #[cfg(feature = "transparent-inputs")]
+                TransactionDataRequest::TransactionsInvolvingAddress(tia) => {
+                    let address = tia.address().encode(params);
+                    let request = service::TransparentAddressBlockFilter {
+                        address: address.clone(),
+                        range: Some(service::BlockRange {
+                            start: Some(service::BlockId {
+                                height: u64::from(tia.block_range_start()),
+                                ..Default::default()
+                            }),
+                            end: tia.block_range_end().map(|h| service::BlockId {
+                                height: u64::from(h - 1), // `BlockRange` end is inclusive.
+                                ..Default::default()
+                            }),
+                            pool_types: Default::default(),
+                        }),
+                    };
+
+                    let mut stream = client.get_taddress_txids(request).await?.into_inner();
+                    while let Some(raw_tx) = stream.try_next().await? {
+                        let (tx, mined_height) =
+                            parse_raw_transaction(params, chain_tip, raw_tx)?;
+                        info!(
+                            "Found tx {:?} for address {} with mined height {:?}",
+                            tx.txid(),
+                            address,
+                            mined_height
+                        );
+                        decrypt_and_store_transaction(params, db_data, &tx, mined_height)?;
+                    }
+                }
+                #[cfg(not(feature = "transparent-inputs"))]
+                TransactionDataRequest::TransactionsInvolvingAddress(_) => {
+                    warn!("TransactionsInvolvingAddress request ignored: transparent-inputs feature not enabled");
+                }
+            }
+
+            satisfied_requests.insert(data_request);
+        }
+
+        if !new_request_encountered {
+            break;
         }
     }
 
