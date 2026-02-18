@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use tower_http::cors::CorsLayer;
 
 use super::AppState;
 
@@ -29,5 +30,6 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/sync/status", get(sync::sync_status))
         .route("/ufvks/{id}/sync", get(sync::wallet_sync_status))
+        .layer(CorsLayer::very_permissive())
         .with_state(state)
 }

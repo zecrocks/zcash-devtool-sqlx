@@ -52,6 +52,7 @@ zip321 = "0.6"
 # HTTP Server
 axum = { version = "0.8", features = ["json"] }
 axum-extra = { version = "0.10", features = ["query"] }
+tower-http = { version = "0.6", features = ["cors"] }
 tokio-util = "0.7"
 
 # CLI
