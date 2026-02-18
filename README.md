@@ -110,6 +110,24 @@ docker compose down         # Stop (data persists)
 docker compose down -v      # Stop and delete data volume
 ```
 
+## Example: Register a UFVK via the HTTP API
+
+```
+curl -X POST http://localhost:8080/ufvks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ufvk": "uview1fl9k4zu4p52u7mzkg3d93yyfh6xhqegcwh7nqadkl49d3gm47tl2cw50lguaveyg0yamm3lpymr4zfv56y4lqsfyacw49r2fz936z34pcy0wyt0vmdhp287gwh3vw4s3dcvd54wkju90548knm0hg6npsq8yasky705hxskp8c3h3s24h4dtwmxwmyt3ccf26qhcj3vwmglj652z7ug3py8k0rkl6x3wxrwjgs2ztu25280rr8jc47fc9ercw9azjud7m0cmahmf32tea8kdnyn0msgtq8lxneyucf5ht6dg779uk6mmaaweutx4h450slfffgjlf02p0k5kjydzgze0xhrdtv3kz6kncv9sfrn3rx7pmhk5yd22v8zxuz2wdk07q3c90yem3",
+    "birthday": 3066155,
+    "name": "ZecRocks Node Rewards"
+  }'
+```
+
+The response includes a wallet `id`. Use it to fetch transaction history once the wallet has synced:
+
+```
+curl http://localhost:8080/ufvks/<wallet-id>/transactions
+```
+
 ## Documentation
 
 For a step-by-step guide for how to get started using these tools, see [this
