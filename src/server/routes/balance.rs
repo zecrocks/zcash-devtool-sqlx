@@ -46,8 +46,9 @@ pub(crate) async fn get_balance(
                 std::thread::sleep(std::time::Duration::from_secs(attempt * 2));
             }
 
-            let db_data = WalletDb::for_path(&db_data_path, params, (), ())
+            let conn = crate::server::db::open_wallet_connection(&db_data_path)
                 .map_err(|e| ApiError::Internal(format!("Failed to open wallet db: {e}")))?;
+            let db_data = WalletDb::from_connection(conn, params, (), ());
 
             let account = match select_account(&db_data, None) {
                 Ok(a) => a,

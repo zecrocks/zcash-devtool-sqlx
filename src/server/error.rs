@@ -12,6 +12,7 @@ pub(crate) enum ApiError {
     NotFound(String),
     Conflict(String),
     Unprocessable(String),
+    ServiceUnavailable(String),
     Internal(String),
 }
 
@@ -22,6 +23,7 @@ impl std::fmt::Display for ApiError {
             ApiError::NotFound(msg) => write!(f, "Not Found: {msg}"),
             ApiError::Conflict(msg) => write!(f, "Conflict: {msg}"),
             ApiError::Unprocessable(msg) => write!(f, "Unprocessable: {msg}"),
+            ApiError::ServiceUnavailable(msg) => write!(f, "Service Unavailable: {msg}"),
             ApiError::Internal(msg) => write!(f, "Internal Error: {msg}"),
         }
     }
@@ -34,6 +36,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::Unprocessable(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg),
+            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
             ApiError::Internal(msg) => {
                 tracing::error!("Internal server error: {msg}");
                 (StatusCode::INTERNAL_SERVER_ERROR, msg)

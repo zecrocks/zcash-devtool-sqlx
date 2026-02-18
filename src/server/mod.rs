@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::remote::{ConnectionMode, Servers};
 
+pub(crate) mod db;
 pub(crate) mod error;
 pub(crate) mod registry;
 pub(crate) mod routes;

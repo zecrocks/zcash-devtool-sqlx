@@ -7,6 +7,7 @@ use axum::{
 
 use super::AppState;
 
+pub(crate) mod address;
 pub(crate) mod balance;
 pub(crate) mod health;
 pub(crate) mod sync;
@@ -20,6 +21,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/ufvks", get(ufvk::list_ufvks))
         .route("/ufvks/{id}", get(ufvk::get_ufvk))
         .route("/ufvks/{id}", delete(ufvk::delete_ufvk))
+        .route("/ufvks/{id}/address", post(address::generate_address))
         .route("/ufvks/{id}/balance", get(balance::get_balance))
         .route(
             "/ufvks/{id}/transactions",

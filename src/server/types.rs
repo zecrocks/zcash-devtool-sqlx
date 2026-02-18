@@ -168,6 +168,28 @@ pub(crate) struct DeleteResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReceiverSelection {
+    Orchard,
+    Sapling,
+    Shielded,
+    All,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GenerateAddressRequest {
+    pub diversifier_index: Option<u128>,
+    pub receivers: Option<ReceiverSelection>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AddressResponse {
+    pub id: Uuid,
+    pub address: String,
+    pub diversifier_index: u128,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
     pub error: String,

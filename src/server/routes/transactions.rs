@@ -56,6 +56,7 @@ pub(crate) async fn get_transactions(
                     continue;
                 }
             };
+            let _ = conn.pragma_update(None, "journal_mode", "WAL");
             let _ = conn.busy_timeout(std::time::Duration::from_secs(10));
             let _ = rusqlite::vtab::array::load_module(&conn);
 
@@ -119,9 +120,9 @@ fn query_transactions(
                     a.diversifier_index_be
              FROM v_tx_outputs vto
              LEFT JOIN sapling_received_notes srn
-                 ON srn.tx = vto.transaction_id AND srn.output_index = vto.output_index AND vto.output_pool = 2
+                 ON srn.transaction_id = vto.transaction_id AND srn.output_index = vto.output_index AND vto.output_pool = 2
              LEFT JOIN orchard_received_notes orn
-                 ON orn.tx = vto.transaction_id AND orn.action_index = vto.output_index AND vto.output_pool = 3
+                 ON orn.transaction_id = vto.transaction_id AND orn.action_index = vto.output_index AND vto.output_pool = 3
              LEFT JOIN addresses a
                  ON a.id = COALESCE(srn.address_id, orn.address_id)
              WHERE vto.txid = :txid",

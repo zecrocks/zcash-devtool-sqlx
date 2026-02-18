@@ -305,7 +305,8 @@ async fn run_sync_cycle(
     let fsblockdb_root_path = fsblockdb_root.as_path();
     let mut db_cache = FsBlockDb::for_path(fsblockdb_root_path).map_err(error::Error::from)?;
     init_blockmeta_db(&mut db_cache)?;
-    let mut db_data = WalletDb::for_path(db_data_path, params, SystemClock, OsRng)?;
+    let conn = crate::server::db::open_wallet_connection(&db_data_path)?;
+    let mut db_data = WalletDb::from_connection(conn, params, SystemClock, OsRng);
 
     // 1. Update subtree roots
     update_subtree_roots(&mut client, &mut db_data).await?;
