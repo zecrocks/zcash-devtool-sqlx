@@ -443,6 +443,9 @@ async fn run_sync_cycle(
         }
 
         if scan_ranges_updated {
+            // New scan ranges were discovered; enhance what we have so far, then restart.
+            info!("Enhancing transactions for wallet {wallet_id}");
+            enhance_transactions(&mut client, &params, &mut db_data, chain_tip).await?;
             return Ok(());
         }
     }
