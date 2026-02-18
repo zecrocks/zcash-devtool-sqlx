@@ -142,6 +142,7 @@ pub(crate) struct TransactionOutputEntry {
     pub value: u64,
     pub is_change: bool,
     pub memo: Option<String>,
+    pub diversifier_index: Option<u128>,
 }
 
 #[derive(Debug, Serialize)]

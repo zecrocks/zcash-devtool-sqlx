@@ -115,9 +115,16 @@ fn query_transactions(
 
     let mut stmt_outputs = conn
         .prepare(
-            "SELECT output_pool, output_index, to_address, value, is_change, memo
-             FROM v_tx_outputs
-             WHERE txid = :txid",
+            "SELECT vto.output_pool, vto.output_index, vto.to_address, vto.value, vto.is_change, vto.memo,
+                    a.diversifier_index_be
+             FROM v_tx_outputs vto
+             LEFT JOIN sapling_received_notes srn
+                 ON srn.tx = vto.transaction_id AND srn.output_index = vto.output_index AND vto.output_pool = 2
+             LEFT JOIN orchard_received_notes orn
+                 ON orn.tx = vto.transaction_id AND orn.action_index = vto.output_index AND vto.output_pool = 3
+             LEFT JOIN addresses a
+                 ON a.id = COALESCE(srn.address_id, orn.address_id)
+             WHERE vto.txid = :txid",
         )
         .map_err(|e| ApiError::Internal(format!("Failed to prepare output query: {e}")))?;
 
@@ -196,6 +203,14 @@ fn query_transactions(
                         })
                 });
 
+                let di_bytes: Option<Vec<u8>> = out_row.get("diversifier_index_be")?;
+                let diversifier_index = di_bytes.map(|mut b| {
+                    b.reverse(); // big-endian -> little-endian
+                    let mut arr = [0u8; 16];
+                    arr[..b.len().min(16)].copy_from_slice(&b[..b.len().min(16)]);
+                    u128::from_le_bytes(arr)
+                });
+
                 Ok(TransactionOutputEntry {
                     pool,
                     output_index,
@@ -203,6 +218,7 @@ fn query_transactions(
                     value: value as u64,
                     is_change,
                     memo,
+                    diversifier_index,
                 })
             })
             .map_err(|e| ApiError::Internal(format!("Failed to query outputs: {e}")))?
