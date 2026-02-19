@@ -291,6 +291,7 @@ pub(crate) async fn resolve_address(
 
         if let Some(diversifier_index) = matched_di {
             return Ok(Json(ResolveAddressResponse {
+                address: req.address.clone(),
                 wallet_id: wallet_id.clone(),
                 diversifier_index,
                 matched_pools,
@@ -386,6 +387,7 @@ pub(crate) async fn address_balance(
 
         let wallet_dir = wallet.wallet_dir.clone();
         let wallet_id = wallet_id.clone();
+        let address = req.address.clone();
 
         // Drop the registry lock before the blocking task
         drop(registry);
@@ -470,6 +472,7 @@ pub(crate) async fn address_balance(
                     match result {
                         Ok((total_received, balance, last_received_height)) => {
                             return Ok(AddressBalanceResponse {
+                                address,
                                 wallet_id,
                                 diversifier_index: di_val,
                                 balance,

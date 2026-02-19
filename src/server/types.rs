@@ -198,6 +198,7 @@ pub(crate) struct ResolveAddressRequest {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ResolveAddressResponse {
+    pub address: String,
     pub wallet_id: String,
     pub diversifier_index: u128,
     pub matched_pools: Vec<String>,
@@ -211,6 +212,7 @@ pub(crate) struct AddressBalanceRequest {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AddressBalanceResponse {
+    pub address: String,
     pub wallet_id: String,
     pub diversifier_index: u128,
     pub balance: u64,
