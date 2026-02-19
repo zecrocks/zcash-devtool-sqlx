@@ -190,6 +190,19 @@ pub(crate) struct AddressResponse {
     pub diversifier_index: u128,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ResolveAddressRequest {
+    pub address: String,
+    pub wallet_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ResolveAddressResponse {
+    pub wallet_id: String,
+    pub diversifier_index: u128,
+    pub matched_pools: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
     pub error: String,

@@ -5,10 +5,14 @@ use axum::{
     Json,
 };
 use rand::rngs::OsRng;
+use zcash_address::{
+    unified::{self, Container},
+    TryFromAddress, ZcashAddress,
+};
 use zcash_client_backend::data_api::{Account, WalletWrite};
 use zcash_client_sqlite::{util::SystemClock, WalletDb};
 use zcash_keys::keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey};
-use zcash_protocol::consensus;
+use zcash_protocol::consensus::{self, NetworkType};
 use zip32::DiversifierIndex;
 
 use crate::{
@@ -16,7 +20,10 @@ use crate::{
     data::get_db_paths,
     server::{
         error::ApiError,
-        types::{AddressResponse, GenerateAddressRequest, ReceiverSelection},
+        types::{
+            AddressResponse, GenerateAddressRequest, ReceiverSelection, ResolveAddressRequest,
+            ResolveAddressResponse,
+        },
         AppState,
     },
 };
@@ -167,4 +174,130 @@ pub(crate) async fn generate_address(
     .map_err(|e| ApiError::Internal(format!("Task join error: {e}")))??;
 
     Ok(Json(response))
+}
+
+// Helper to parse a ZcashAddress into a unified::Address + NetworkType
+struct ParsedUa {
+    net: NetworkType,
+    ua: unified::Address,
+}
+
+impl TryFromAddress for ParsedUa {
+    type Error = &'static str;
+
+    fn try_from_unified(
+        net: NetworkType,
+        data: unified::Address,
+    ) -> Result<Self, zcash_address::ConversionError<Self::Error>> {
+        Ok(ParsedUa { net, ua: data })
+    }
+}
+
+pub(crate) async fn resolve_address(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ResolveAddressRequest>,
+) -> Result<Json<ResolveAddressResponse>, ApiError> {
+    if req.wallet_ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "wallet_ids must not be empty".into(),
+        ));
+    }
+
+    // Parse the address string as a UA
+    let zaddr: ZcashAddress = req
+        .address
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid Zcash address: {e}")))?;
+
+    let parsed = zaddr
+        .convert::<ParsedUa>()
+        .map_err(|_| ApiError::BadRequest("Address is not a Unified Address".into()))?;
+
+    let params: consensus::Network = match parsed.net {
+        NetworkType::Main => consensus::Network::MainNetwork,
+        NetworkType::Test => consensus::Network::TestNetwork,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Unsupported network type".into(),
+            ))
+        }
+    };
+
+    // Extract Sapling and Orchard receivers from the UA
+    let mut sapling_bytes: Option<[u8; 43]> = None;
+    let mut orchard_bytes: Option<[u8; 43]> = None;
+
+    for receiver in parsed.ua.items() {
+        match receiver {
+            unified::Receiver::Sapling(data) => sapling_bytes = Some(data),
+            unified::Receiver::Orchard(data) => {
+                orchard_bytes = Some(data.try_into().map_err(|_| {
+                    ApiError::Internal("Unexpected Orchard receiver length".into())
+                })?)
+            }
+            _ => {}
+        }
+    }
+
+    if sapling_bytes.is_none() && orchard_bytes.is_none() {
+        return Err(ApiError::BadRequest(
+            "UA contains no Sapling or Orchard receivers to resolve".into(),
+        ));
+    }
+
+    // Try each wallet
+    let registry = state.registry.lock().await;
+
+    for wallet_id in &req.wallet_ids {
+        let wallet = registry
+            .get_wallet(wallet_id)?
+            .ok_or_else(|| ApiError::NotFound(format!("Wallet {wallet_id} not found")))?;
+
+        let ufvk = UnifiedFullViewingKey::decode(&params, &wallet.ufvk)
+            .map_err(|e| ApiError::Internal(format!("Failed to decode UFVK: {e}")))?;
+
+        let mut matched_pools = Vec::new();
+        let mut matched_di: Option<u128> = None;
+
+        // Try Sapling
+        if let Some(sapling_data) = sapling_bytes {
+            if let Some(dfvk) = ufvk.sapling() {
+                if let Some(addr) = sapling::PaymentAddress::from_bytes(&sapling_data) {
+                    if let Some((di, _scope)) = dfvk.decrypt_diversifier(&addr) {
+                        let di_val: u128 = di.into();
+                        matched_pools.push("sapling".to_string());
+                        matched_di = Some(di_val);
+                    }
+                }
+            }
+        }
+
+        // Try Orchard
+        if let Some(orchard_data) = orchard_bytes {
+            if let Some(fvk) = ufvk.orchard() {
+                if let Some(addr) =
+                    orchard::Address::from_raw_address_bytes(&orchard_data).into()
+                {
+                    let ivk = fvk.to_ivk(orchard::keys::Scope::External);
+                    if let Some(di) = ivk.diversifier_index(&addr) {
+                        let di_val: u128 = di.into();
+                        matched_pools.push("orchard".to_string());
+                        matched_di = Some(di_val);
+                    }
+                }
+            }
+        }
+
+        if let Some(diversifier_index) = matched_di {
+            return Ok(Json(ResolveAddressResponse {
+                wallet_id: wallet_id.clone(),
+                diversifier_index,
+                matched_pools,
+            }));
+        }
+    }
+
+    Err(ApiError::NotFound(
+        "No matching wallet found for the given address".into(),
+    ))
 }
