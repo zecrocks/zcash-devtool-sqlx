@@ -21,7 +21,8 @@ use crate::{
     server::{
         error::ApiError,
         types::{
-            AddressResponse, GenerateAddressRequest, ReceiverSelection, ResolveAddressRequest,
+            AddressBalanceRequest, AddressBalanceResponse, AddressResponse,
+            GenerateAddressRequest, ReceiverSelection, ResolveAddressRequest,
             ResolveAddressResponse,
         },
         AppState,
@@ -295,6 +296,207 @@ pub(crate) async fn resolve_address(
                 matched_pools,
             }));
         }
+    }
+
+    Err(ApiError::NotFound(
+        "No matching wallet found for the given address".into(),
+    ))
+}
+
+pub(crate) async fn address_balance(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddressBalanceRequest>,
+) -> Result<Json<AddressBalanceResponse>, ApiError> {
+    if req.wallet_ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "wallet_ids must not be empty".into(),
+        ));
+    }
+
+    // Parse the address string as a UA
+    let zaddr: ZcashAddress = req
+        .address
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid Zcash address: {e}")))?;
+
+    let parsed = zaddr
+        .convert::<ParsedUa>()
+        .map_err(|_| ApiError::BadRequest("Address is not a Unified Address".into()))?;
+
+    // Validate: must have exactly 1 receiver and it must be Orchard
+    let items = parsed.ua.items();
+    if items.len() != 1 {
+        return Err(ApiError::BadRequest(
+            "Address must contain exactly one receiver (Orchard only)".into(),
+        ));
+    }
+    let orchard_bytes: [u8; 43] = match &items[0] {
+        unified::Receiver::Orchard(data) => data.clone().try_into().map_err(|_| {
+            ApiError::Internal("Unexpected Orchard receiver length".into())
+        })?,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "The single receiver must be Orchard".into(),
+            ))
+        }
+    };
+
+    let params: consensus::Network = match parsed.net {
+        NetworkType::Main => consensus::Network::MainNetwork,
+        NetworkType::Test => consensus::Network::TestNetwork,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Unsupported network type".into(),
+            ))
+        }
+    };
+
+    let orchard_addr: orchard::Address =
+        Option::from(orchard::Address::from_raw_address_bytes(&orchard_bytes))
+            .ok_or_else(|| ApiError::BadRequest("Invalid Orchard receiver bytes".into()))?;
+
+    // Try each wallet to find a match
+    let registry = state.registry.lock().await;
+
+    for wallet_id in &req.wallet_ids {
+        let wallet = registry
+            .get_wallet(wallet_id)?
+            .ok_or_else(|| ApiError::NotFound(format!("Wallet {wallet_id} not found")))?;
+
+        let ufvk = UnifiedFullViewingKey::decode(&params, &wallet.ufvk)
+            .map_err(|e| ApiError::Internal(format!("Failed to decode UFVK: {e}")))?;
+
+        let fvk = match ufvk.orchard() {
+            Some(fvk) => fvk,
+            None => continue,
+        };
+
+        let ivk = fvk.to_ivk(orchard::keys::Scope::External);
+        let di = match ivk.diversifier_index(&orchard_addr) {
+            Some(di) => di,
+            None => continue,
+        };
+
+        let di_val: u128 = di.into();
+
+        // Convert diversifier index to big-endian bytes for DB lookup
+        let di_bytes = di.as_bytes();
+        let mut di_be = di_bytes.to_vec();
+        di_be.reverse();
+
+        let wallet_dir = wallet.wallet_dir.clone();
+        let wallet_id = wallet_id.clone();
+
+        // Drop the registry lock before the blocking task
+        drop(registry);
+
+        let response =
+            tokio::task::spawn_blocking(move || -> Result<AddressBalanceResponse, ApiError> {
+                let db_data_path =
+                    std::path::PathBuf::from(&wallet_dir).join("data.sqlite");
+
+                for attempt in 0..6u64 {
+                    if attempt > 0 {
+                        std::thread::sleep(std::time::Duration::from_secs(attempt * 2));
+                    }
+
+                    let conn = match crate::server::db::open_wallet_connection(&db_data_path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if msg.contains("database is locked") {
+                                continue;
+                            }
+                            return Err(ApiError::Internal(format!(
+                                "Failed to open wallet db: {e}"
+                            )));
+                        }
+                    };
+
+                    // Get the single account's numeric id
+                    let account_id: u32 = match conn.query_row(
+                        "SELECT id FROM accounts LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    ) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if msg.contains("database is locked") {
+                                continue;
+                            }
+                            return Err(ApiError::Internal(format!(
+                                "Failed to query account: {e}"
+                            )));
+                        }
+                    };
+
+                    let result: Result<(u64, u64, Option<u32>), rusqlite::Error> = (|| {
+                        let mut stmt = conn.prepare(
+                            "SELECT
+                                COALESCE(SUM(rn.value), 0),
+                                MAX(t.mined_height),
+                                COALESCE(SUM(CASE
+                                    WHEN rn.id NOT IN (
+                                        SELECT orchard_received_note_id
+                                        FROM orchard_received_note_spends rns
+                                        JOIN transactions stx ON stx.id_tx = rns.transaction_id
+                                        WHERE stx.mined_height IS NOT NULL
+                                    ) THEN rn.value
+                                    ELSE 0
+                                END), 0)
+                            FROM orchard_received_notes rn
+                            JOIN transactions t ON t.id_tx = rn.transaction_id
+                            JOIN addresses a ON a.id = rn.address_id
+                            WHERE a.account_id = :account_id
+                              AND a.diversifier_index_be = :di_be
+                              AND t.mined_height IS NOT NULL",
+                        )?;
+
+                        stmt.query_row(
+                            rusqlite::named_params! {
+                                ":account_id": account_id,
+                                ":di_be": di_be,
+                            },
+                            |row| {
+                                let total_received: u64 = row.get(0)?;
+                                let last_received_height: Option<u32> = row.get(1)?;
+                                let balance: u64 = row.get(2)?;
+                                Ok((total_received, balance, last_received_height))
+                            },
+                        )
+                    })();
+
+                    match result {
+                        Ok((total_received, balance, last_received_height)) => {
+                            return Ok(AddressBalanceResponse {
+                                wallet_id,
+                                diversifier_index: di_val,
+                                balance,
+                                total_received,
+                                last_received_height,
+                            });
+                        }
+                        Err(e) => {
+                            let msg = format!("{e}");
+                            if msg.contains("database is locked") {
+                                continue;
+                            }
+                            return Err(ApiError::Internal(format!(
+                                "Failed to query balance: {e}"
+                            )));
+                        }
+                    }
+                }
+
+                Err(ApiError::ServiceUnavailable(
+                    "Wallet database is currently locked by sync, try again later".into(),
+                ))
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("Task join error: {e}")))??;
+
+        return Ok(Json(response));
     }
 
     Err(ApiError::NotFound(

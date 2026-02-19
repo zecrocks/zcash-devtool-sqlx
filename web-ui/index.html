@@ -174,6 +174,22 @@ tr.selected { background: #e0edff; }
       </div>
     </div>
 
+    <!-- Address Balance -->
+    <div class="addr-section">
+      <h3>Address Balance</h3>
+      <div class="addr-row">
+        <div class="form-group" style="flex:1;">
+          <label for="addrbal-addr">Orchard-only Unified Address</label>
+          <input id="addrbal-addr" type="text" placeholder="u1..." style="width:100%;">
+        </div>
+        <button class="btn btn-primary" onclick="addressBalance()">Balance</button>
+      </div>
+      <div id="addrbal-msg"></div>
+      <div id="addrbal-result" class="addr-result" style="display:none;">
+        <div class="generated-addr mono" id="addrbal-value"></div>
+      </div>
+    </div>
+
     <h2>Transactions</h2>
     <div id="tx-list"></div>
     <div id="tx-pagination" class="pagination" style="display:none;">
@@ -485,6 +501,29 @@ async function resolveAddress() {
     document.getElementById('resolve-result').style.display = '';
   } catch (e) {
     showMsg('resolve-msg', e.message, false);
+  }
+}
+
+/* ---- Address Balance ---- */
+async function addressBalance() {
+  if (!selectedWalletId) return;
+  const addr = document.getElementById('addrbal-addr').value.trim();
+  if (!addr) { showMsg('addrbal-msg', 'Enter an Orchard-only Unified Address.', false); return; }
+
+  document.getElementById('addrbal-result').style.display = 'none';
+  document.getElementById('addrbal-msg').innerHTML = '<div class="msg">Querying...</div>';
+  try {
+    const data = await apiFetch('/address/balance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr, wallet_ids: [selectedWalletId] }),
+    });
+    document.getElementById('addrbal-msg').innerHTML = '';
+    document.getElementById('addrbal-value').textContent =
+      'Balance: ' + zatToZec(data.balance) + ' ZEC  |  Total received: ' + zatToZec(data.total_received) + ' ZEC  |  Last received height: ' + (data.last_received_height || '-') + '  |  Diversifier index: ' + data.diversifier_index;
+    document.getElementById('addrbal-result').style.display = '';
+  } catch (e) {
+    showMsg('addrbal-msg', e.message, false);
   }
 }
 

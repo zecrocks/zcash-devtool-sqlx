@@ -29,6 +29,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
             get(transactions::get_transactions),
         )
         .route("/address/resolve", post(address::resolve_address))
+        .route("/address/balance", post(address::address_balance))
         .route("/sync/status", get(sync::sync_status))
         .route("/ufvks/{id}/sync", get(sync::wallet_sync_status))
         .layer(CorsLayer::very_permissive())

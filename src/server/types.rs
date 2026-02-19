@@ -203,6 +203,21 @@ pub(crate) struct ResolveAddressResponse {
     pub matched_pools: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct AddressBalanceRequest {
+    pub address: String,
+    pub wallet_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AddressBalanceResponse {
+    pub wallet_id: String,
+    pub diversifier_index: u128,
+    pub balance: u64,
+    pub total_received: u64,
+    pub last_received_height: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
     pub error: String,
