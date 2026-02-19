@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zcash UFVK Browser</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #1a1a1a; line-height: 1.5; }
+.mono { font-family: 'SF Mono', 'Consolas', 'Liberation Mono', monospace; font-size: 0.9em; }
+h2 { font-size: 1.1em; margin-bottom: 0.75em; }
+
+/* Connection bar */
+#conn-bar { background: #fff; border-bottom: 1px solid #ddd; padding: 12px 20px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#conn-bar label { font-weight: 600; }
+#api-host { width: 280px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95em; }
+#conn-bar button { padding: 6px 16px; border: none; border-radius: 4px; background: #3b82f6; color: #fff; cursor: pointer; font-size: 0.95em; }
+#conn-bar button:hover { background: #2563eb; }
+#conn-status { font-size: 0.9em; color: #666; }
+#conn-status.ok { color: #16a34a; }
+#conn-status.err { color: #dc2626; }
+
+/* Panels */
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+.panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 16px 20px; }
+.panel.hidden { display: none; }
+
+/* Forms */
+.form-group { margin-bottom: 10px; }
+.form-group label { display: block; font-size: 0.85em; font-weight: 600; margin-bottom: 3px; }
+.form-group input, .form-group textarea { width: 100%; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95em; }
+.form-group textarea { height: 70px; resize: vertical; font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.85em; }
+.btn { padding: 7px 18px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.95em; }
+.btn-primary { background: #3b82f6; color: #fff; }
+.btn-primary:hover { background: #2563eb; }
+.msg { margin-top: 8px; font-size: 0.9em; padding: 6px 10px; border-radius: 4px; }
+.msg.ok { background: #dcfce7; color: #166534; }
+.msg.err { background: #fef2f2; color: #991b1b; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+th { text-align: left; font-weight: 600; padding: 8px 10px; border-bottom: 2px solid #ddd; font-size: 0.85em; text-transform: uppercase; color: #555; }
+td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #f0f7ff; }
+tr.selected { background: #e0edff; }
+.empty-msg { padding: 20px; text-align: center; color: #888; }
+
+/* Pagination */
+.pagination { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.9em; }
+.pagination button { padding: 4px 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.pagination .page-info { color: #666; }
+
+/* Amount coloring */
+.amt-pos { color: #16a34a; }
+.amt-neg { color: #dc2626; }
+
+/* Expandable row */
+.expand-row td { padding: 0; }
+.expand-content { padding: 10px 20px; background: #fafafa; border-top: 1px dashed #ddd; }
+.expand-content table { font-size: 0.85em; margin-top: 4px; }
+.expand-content th { font-size: 0.8em; }
+.memo-text { max-width: 300px; word-break: break-word; }
+
+/* Balance header */
+.wallet-header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.wallet-header .balance { font-size: 1.3em; font-weight: 700; }
+.wallet-header .wallet-id { color: #666; font-size: 0.85em; }
+.wallet-header .progress { font-size: 0.85em; color: #888; }
+
+/* Address generation */
+.addr-section { margin-bottom: 16px; padding: 12px 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+.addr-section h3 { font-size: 0.95em; margin-bottom: 8px; }
+.addr-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.addr-row .form-group { margin-bottom: 0; }
+.addr-row .form-group input, .addr-row .form-group select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95em; }
+.addr-result { margin-top: 8px; }
+.addr-result .generated-addr { word-break: break-all; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; font-size: 0.85em; cursor: pointer; }
+.addr-result .generated-addr:hover { background: #f0f7ff; }
+.addr-result .di-info { font-size: 0.8em; color: #666; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div id="conn-bar">
+  <label for="api-host">API:</label>
+  <input id="api-host" type="text" value="216.230.225.49:8080" placeholder="host:port">
+  <button onclick="doConnect()">Connect</button>
+  <span id="conn-status"></span>
+</div>
+
+<div class="container">
+  <!-- Register UFVK -->
+  <div class="panel">
+    <h2>Register UFVK</h2>
+    <div class="form-group">
+      <label for="reg-ufvk">UFVK</label>
+      <textarea id="reg-ufvk" placeholder="uview1..."></textarea>
+    </div>
+    <div style="display:flex;gap:12px;">
+      <div class="form-group" style="flex:1;">
+        <label for="reg-birthday">Birthday Height</label>
+        <input id="reg-birthday" type="number" placeholder="e.g. 2700000">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label for="reg-name">Name (optional)</label>
+        <input id="reg-name" type="text" placeholder="My Wallet">
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="registerUfvk()">Register</button>
+    <div id="reg-msg"></div>
+  </div>
+
+  <!-- Wallet List -->
+  <div class="panel">
+    <h2>Wallets</h2>
+    <div id="wallet-list"></div>
+    <div id="wallet-pagination" class="pagination" style="display:none;">
+      <button onclick="loadWallets(walletPage-1)">Prev</button>
+      <span class="page-info" id="wallet-page-info"></span>
+      <button onclick="loadWallets(walletPage+1)">Next</button>
+    </div>
+  </div>
+
+  <!-- Wallet Detail -->
+  <div id="tx-panel" class="panel hidden">
+    <div class="wallet-header">
+      <span class="balance mono" id="tx-balance"></span>
+      <span class="wallet-id mono" id="tx-wallet-id"></span>
+      <span class="progress" id="tx-progress"></span>
+    </div>
+
+    <!-- Generate Address -->
+    <div class="addr-section">
+      <h3>Generate Address</h3>
+      <div class="addr-row">
+        <div class="form-group">
+          <label for="addr-di">Diversifier Index (optional)</label>
+          <input id="addr-di" type="text" placeholder="auto" style="width:160px;">
+        </div>
+        <div class="form-group">
+          <label for="addr-receivers">Receivers</label>
+          <select id="addr-receivers" style="width:140px;">
+            <option value="">Default</option>
+            <option value="orchard">Orchard</option>
+            <option value="sapling">Sapling</option>
+            <option value="shielded">Shielded</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="generateAddress()">Generate</button>
+      </div>
+      <div id="addr-msg"></div>
+      <div id="addr-result" class="addr-result" style="display:none;">
+        <div class="generated-addr mono" id="addr-value" title="Click to copy" onclick="copyAddress()"></div>
+        <div class="di-info" id="addr-di-info"></div>
+      </div>
+    </div>
+
+    <!-- Resolve Address -->
+    <div class="addr-section">
+      <h3>Resolve Address</h3>
+      <div class="addr-row">
+        <div class="form-group" style="flex:1;">
+          <label for="resolve-addr">Unified Address</label>
+          <input id="resolve-addr" type="text" placeholder="u1..." style="width:100%;">
+        </div>
+        <button class="btn btn-primary" onclick="resolveAddress()">Resolve</button>
+      </div>
+      <div id="resolve-msg"></div>
+      <div id="resolve-result" class="addr-result" style="display:none;">
+        <div class="generated-addr mono" id="resolve-value"></div>
+      </div>
+    </div>
+
+    <h2>Transactions</h2>
+    <div id="tx-list"></div>
+    <div id="tx-pagination" class="pagination" style="display:none;">
+      <button onclick="loadTransactions(txPage-1)">Prev</button>
+      <span class="page-info" id="tx-page-info"></span>
+      <button onclick="loadTransactions(txPage+1)">Next</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function apiBase() {
+  let h = document.getElementById('api-host').value.trim();
+  if (!h) return '';
+  if (!h.startsWith('http')) h = 'http://' + h;
+  return h;
+}
+
+async function apiFetch(path, opts = {}) {
+  const url = apiBase() + path;
+  const resp = await fetch(url, opts);
+  const body = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const msg = body && body.error ? body.error : `HTTP ${resp.status}`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
+function showMsg(id, text, ok) {
+  const el = document.getElementById(id);
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+}
+
+function zatToZec(zat) {
+  return (Number(zat) / 1e8).toFixed(8);
+}
+
+function fmtTime(unix) {
+  if (!unix) return '-';
+  return new Date(unix * 1000).toLocaleString();
+}
+
+function truncate(s, n) {
+  if (!s) return '-';
+  return s.length > n ? s.slice(0, n) + '...' : s;
+}
+
+/* ---- Connect ---- */
+async function doConnect() {
+  const st = document.getElementById('conn-status');
+  st.className = ''; st.textContent = 'Connecting...';
+  try {
+    const data = await apiFetch('/health');
+    st.className = 'ok';
+    st.textContent = `Connected - ${data.status} | v${data.version} | up ${Math.floor(data.uptime_seconds/60)}m | wallets: ${data.wallets.mainnet} mainnet, ${data.wallets.testnet} testnet`;
+    loadWallets(1);
+  } catch (e) {
+    st.className = 'err';
+    st.textContent = 'Error: ' + e.message;
+  }
+}
+
+/* ---- Register ---- */
+async function registerUfvk() {
+  const ufvk = document.getElementById('reg-ufvk').value.trim();
+  const birthday = parseInt(document.getElementById('reg-birthday').value, 10);
+  const name = document.getElementById('reg-name').value.trim() || undefined;
+  if (!ufvk || !birthday) { showMsg('reg-msg', 'UFVK and birthday are required.', false); return; }
+  try {
+    const data = await apiFetch('/ufvks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ufvk, birthday, name }),
+    });
+    showMsg('reg-msg', `Registered! Wallet ID: ${data.id} (${data.network})`, true);
+    loadWallets(1);
+  } catch (e) {
+    showMsg('reg-msg', e.message, false);
+  }
+}
+
+/* ---- Wallets ---- */
+let walletPage = 1;
+const PER_PAGE = 20;
+
+async function loadWallets(page) {
+  walletPage = page;
+  const container = document.getElementById('wallet-list');
+  try {
+    const data = await apiFetch(`/ufvks?page=${page}&per_page=${PER_PAGE}`);
+    const totalPages = Math.ceil(data.total / data.per_page) || 1;
+    if (!data.wallets.length) {
+      container.innerHTML = '<div class="empty-msg">No wallets registered.</div>';
+      document.getElementById('wallet-pagination').style.display = 'none';
+      return;
+    }
+    let html = '<table><tr><th>ID</th><th>Name</th><th>Network</th><th>Birthday</th><th>Sync Status</th></tr>';
+    data.wallets.forEach(w => {
+      const sync = w.sync_status;
+      let syncText = '-';
+      if (sync) {
+        syncText = sync.status;
+        if (sync.sync_progress != null) syncText += ` (${(sync.sync_progress * 100).toFixed(1)}%)`;
+        if (sync.last_synced_height != null) syncText += ` h:${sync.last_synced_height}`;
+      }
+      html += `<tr class="clickable" onclick="selectWallet('${w.id}')">
+        <td class="mono">${truncate(w.id, 24)}</td>
+        <td>${w.name || '-'}</td>
+        <td>${w.network}</td>
+        <td class="mono">${w.birthday}</td>
+        <td>${syncText}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    container.innerHTML = html;
+
+    const pag = document.getElementById('wallet-pagination');
+    pag.style.display = 'flex';
+    pag.children[0].disabled = page <= 1;
+    pag.children[2].disabled = page >= totalPages;
+    document.getElementById('wallet-page-info').textContent = `Page ${page} of ${totalPages} (${data.total} wallets)`;
+  } catch (e) {
+    container.innerHTML = `<div class="msg err">${e.message}</div>`;
+  }
+}
+
+/* ---- Select wallet ---- */
+let selectedWalletId = null;
+
+async function selectWallet(id) {
+  selectedWalletId = id;
+  const panel = document.getElementById('tx-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('tx-wallet-id').textContent = id;
+  document.getElementById('tx-balance').textContent = '...';
+  document.getElementById('tx-progress').textContent = '';
+
+  // highlight row
+  document.querySelectorAll('#wallet-list tr.selected').forEach(r => r.classList.remove('selected'));
+  document.querySelectorAll('#wallet-list tr.clickable').forEach(r => {
+    if (r.onclick && r.onclick.toString().includes(id)) r.classList.add('selected');
+  });
+
+  // load balance + transactions in parallel
+  loadBalance(id);
+  loadTransactions(1);
+}
+
+async function loadBalance(id) {
+  try {
+    const b = await apiFetch(`/ufvks/${id}/balance`);
+    document.getElementById('tx-balance').textContent = zatToZec(b.total) + ' ZEC';
+    let parts = [];
+    if (b.sapling_spendable) parts.push('sapling: ' + zatToZec(b.sapling_spendable));
+    if (b.orchard_spendable) parts.push('orchard: ' + zatToZec(b.orchard_spendable));
+    if (b.unshielded_spendable) parts.push('transparent: ' + zatToZec(b.unshielded_spendable));
+    if (b.scan_progress != null) parts.push('scan: ' + (b.scan_progress * 100).toFixed(1) + '%');
+    document.getElementById('tx-progress').textContent = parts.join(' | ');
+  } catch (e) {
+    document.getElementById('tx-balance').textContent = 'Error';
+    document.getElementById('tx-progress').textContent = e.message;
+  }
+}
+
+/* ---- Transactions ---- */
+let txPage = 1;
+let expandedTxId = null;
+
+async function loadTransactions(page) {
+  txPage = page;
+  expandedTxId = null;
+  const container = document.getElementById('tx-list');
+  if (!selectedWalletId) return;
+  try {
+    const data = await apiFetch(`/ufvks/${selectedWalletId}/transactions?page=${page}&per_page=${PER_PAGE}&sort=desc`);
+    const totalPages = Math.ceil(data.total / data.per_page) || 1;
+    if (!data.transactions.length) {
+      container.innerHTML = '<div class="empty-msg">No transactions found.</div>';
+      document.getElementById('tx-pagination').style.display = 'none';
+      return;
+    }
+    renderTransactions(data.transactions);
+
+    const pag = document.getElementById('tx-pagination');
+    pag.style.display = 'flex';
+    pag.children[0].disabled = page <= 1;
+    pag.children[2].disabled = page >= totalPages;
+    document.getElementById('tx-page-info').textContent = `Page ${page} of ${totalPages} (${data.total} txs)`;
+    // store for expand toggle
+    window._txData = data.transactions;
+  } catch (e) {
+    container.innerHTML = `<div class="msg err">${e.message}</div>`;
+  }
+}
+
+function renderTransactions(txs) {
+  const container = document.getElementById('tx-list');
+  let html = '<table><tr><th>Date</th><th>Amount (ZEC)</th><th>Memos</th><th>TxID</th><th>Height</th><th>Conf.</th><th>Fee</th></tr>';
+  txs.forEach((tx, i) => {
+    const delta = Number(tx.account_balance_delta);
+    const cls = delta >= 0 ? 'amt-pos' : 'amt-neg';
+    const sign = delta >= 0 ? '+' : '';
+    const memos = tx.outputs
+      .map(o => o.memo).filter(Boolean)
+      .join('; ');
+    const conf = tx.confirmations != null ? tx.confirmations.toLocaleString() : '-';
+    html += `<tr class="clickable" onclick="toggleExpand(${i})">
+      <td>${fmtTime(tx.block_time)}</td>
+      <td class="mono ${cls}">${sign}${zatToZec(delta)}</td>
+      <td>${truncate(memos, 40) || '-'}</td>
+      <td class="mono">${truncate(tx.txid, 16)}</td>
+      <td class="mono">${tx.mined_height || 'unconfirmed'}</td>
+      <td class="mono">${conf}</td>
+      <td class="mono">${tx.fee_paid != null ? zatToZec(tx.fee_paid) : '-'}</td>
+    </tr>`;
+    html += `<tr class="expand-row" id="expand-${i}" style="display:none;"><td colspan="7"></td></tr>`;
+  });
+  html += '</table>';
+  container.innerHTML = html;
+}
+
+function toggleExpand(i) {
+  const row = document.getElementById('expand-' + i);
+  if (!row) return;
+  if (expandedTxId === i) {
+    row.style.display = 'none';
+    expandedTxId = null;
+    return;
+  }
+  // collapse previous
+  if (expandedTxId !== null) {
+    const prev = document.getElementById('expand-' + expandedTxId);
+    if (prev) prev.style.display = 'none';
+  }
+  expandedTxId = i;
+  const tx = window._txData[i];
+  let html = '<div class="expand-content">';
+  html += `<strong>TxID:</strong> <span class="mono">${tx.txid}</span><br>`;
+  html += `<strong>Sent notes:</strong> ${tx.sent_note_count} | <strong>Received:</strong> ${tx.received_note_count} | <strong>Memos:</strong> ${tx.memo_count}`;
+  if (tx.expired_unmined) html += ' | <em>Expired (unmined)</em>';
+  if (tx.outputs.length) {
+    html += '<table><tr><th>Pool</th><th>Index</th><th>Address</th><th>Value (ZEC)</th><th>Change</th><th>Memo</th></tr>';
+    tx.outputs.forEach(o => {
+      html += `<tr>
+        <td>${o.pool}</td>
+        <td class="mono">${o.output_index}</td>
+        <td class="mono">${truncate(o.to_address, 24)}</td>
+        <td class="mono">${zatToZec(o.value)}</td>
+        <td>${o.is_change ? 'yes' : ''}</td>
+        <td class="memo-text">${o.memo || '-'}</td>
+      </tr>`;
+    });
+    html += '</table>';
+  }
+  html += '</div>';
+  row.querySelector('td').innerHTML = html;
+  row.style.display = '';
+}
+
+/* ---- Generate Address ---- */
+async function generateAddress() {
+  if (!selectedWalletId) return;
+  const diInput = document.getElementById('addr-di').value.trim();
+  const receivers = document.getElementById('addr-receivers').value || undefined;
+  const body = {};
+  if (diInput !== '') {
+    const di = parseInt(diInput, 10);
+    if (isNaN(di) || di < 0) { showMsg('addr-msg', 'Diversifier index must be a non-negative integer.', false); return; }
+    body.diversifier_index = di;
+  }
+  if (receivers) body.receivers = receivers;
+
+  document.getElementById('addr-result').style.display = 'none';
+  document.getElementById('addr-msg').innerHTML = '<div class="msg">Generating...</div>';
+  try {
+    const data = await apiFetch(`/ufvks/${selectedWalletId}/address`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    document.getElementById('addr-msg').innerHTML = '';
+    document.getElementById('addr-value').textContent = data.address;
+    document.getElementById('addr-di-info').textContent = 'Diversifier index: ' + data.diversifier_index;
+    document.getElementById('addr-result').style.display = '';
+  } catch (e) {
+    showMsg('addr-msg', e.message, false);
+  }
+}
+
+/* ---- Resolve Address ---- */
+async function resolveAddress() {
+  if (!selectedWalletId) return;
+  const addr = document.getElementById('resolve-addr').value.trim();
+  if (!addr) { showMsg('resolve-msg', 'Enter a Unified Address to resolve.', false); return; }
+
+  document.getElementById('resolve-result').style.display = 'none';
+  document.getElementById('resolve-msg').innerHTML = '<div class="msg">Resolving...</div>';
+  try {
+    const data = await apiFetch('/address/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr, wallet_ids: [selectedWalletId] }),
+    });
+    document.getElementById('resolve-msg').innerHTML = '';
+    document.getElementById('resolve-value').textContent =
+      'Diversifier index: ' + data.diversifier_index + '  |  Matched pools: ' + data.matched_pools.join(', ');
+    document.getElementById('resolve-result').style.display = '';
+  } catch (e) {
+    showMsg('resolve-msg', e.message, false);
+  }
+}
+
+function copyAddress() {
+  const addr = document.getElementById('addr-value').textContent;
+  navigator.clipboard.writeText(addr).then(() => {
+    const el = document.getElementById('addr-value');
+    const orig = el.title;
+    el.title = 'Copied!';
+    el.style.background = '#dcfce7';
+    setTimeout(() => { el.title = orig; el.style.background = ''; }, 1500);
+  });
+}
+</script>
+</body>
+</html>
