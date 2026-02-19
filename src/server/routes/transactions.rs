@@ -6,7 +6,14 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use rusqlite::{named_params, Connection};
-use zcash_protocol::memo::{Memo, MemoBytes};
+use zcash_address::{
+    unified::{self, Container, Encoding},
+    TryFromAddress, ZcashAddress,
+};
+use zcash_protocol::{
+    consensus::NetworkType,
+    memo::{Memo, MemoBytes},
+};
 
 use crate::server::{
     error::ApiError,
@@ -31,6 +38,7 @@ pub(crate) async fn get_transactions(
     };
 
     let wallet_dir = wallet.wallet_dir.clone();
+    let network = wallet.network.clone();
     let page = params.page;
     let per_page = params.per_page;
     let sort = params.sort;
@@ -59,7 +67,7 @@ pub(crate) async fn get_transactions(
             let _ = conn.busy_timeout(std::time::Duration::from_secs(10));
             let _ = rusqlite::vtab::array::load_module(&conn);
 
-            match query_transactions(&conn, page, per_page, sort) {
+            match query_transactions(&conn, page, per_page, sort, &network) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     let msg = format!("{e}");
@@ -80,11 +88,67 @@ pub(crate) async fn get_transactions(
     Ok(Json(result?))
 }
 
+// Helper to parse a ZcashAddress into a unified::Address + NetworkType
+struct ParsedUa {
+    net: NetworkType,
+    ua: unified::Address,
+}
+
+impl TryFromAddress for ParsedUa {
+    type Error = &'static str;
+
+    fn try_from_unified(
+        net: NetworkType,
+        data: unified::Address,
+    ) -> Result<Self, zcash_address::ConversionError<Self::Error>> {
+        Ok(ParsedUa { net, ua: data })
+    }
+}
+
+/// If `address` is a multi-receiver UA, return a new UA containing only the
+/// receiver that matches `pool_code` (2=sapling, 3=orchard). Falls back to the
+/// original address on any parse error or if there's only one receiver.
+fn strip_to_pool_receiver(address: &str, pool_code: i64, network: &str) -> String {
+    let Ok(zaddr) = address.parse::<ZcashAddress>() else {
+        return address.to_string();
+    };
+    let Ok(parsed) = zaddr.convert::<ParsedUa>() else {
+        return address.to_string();
+    };
+
+    let items = parsed.ua.items();
+    if items.len() <= 1 {
+        return address.to_string();
+    }
+
+    let target = match pool_code {
+        2 => items.iter().find(|r| matches!(r, unified::Receiver::Sapling(_))),
+        3 => items.iter().find(|r| matches!(r, unified::Receiver::Orchard(_))),
+        _ => return address.to_string(),
+    };
+
+    let Some(receiver) = target else {
+        return address.to_string();
+    };
+
+    let net = match network {
+        "main" => NetworkType::Main,
+        "test" => NetworkType::Test,
+        _ => parsed.net,
+    };
+
+    match unified::Address::try_from_items(vec![receiver.clone()]) {
+        Ok(new_ua) => new_ua.encode(&net),
+        Err(_) => address.to_string(),
+    }
+}
+
 fn query_transactions(
     conn: &Connection,
     page: u64,
     per_page: u64,
     sort: SortOrder,
+    network: &str,
 ) -> Result<TransactionListResponse, ApiError> {
     let total: u64 = conn
         .query_row("SELECT COUNT(*) FROM v_transactions", [], |row| row.get(0))
@@ -217,6 +281,10 @@ fn query_transactions(
                     let mut arr = [0u8; 16];
                     arr[..b.len().min(16)].copy_from_slice(&b[..b.len().min(16)]);
                     u128::from_le_bytes(arr)
+                });
+
+                let to_address = to_address.map(|addr| {
+                    strip_to_pool_receiver(&addr, pool_code, network)
                 });
 
                 Ok(TransactionOutputEntry {
