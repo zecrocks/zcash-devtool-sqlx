@@ -72,6 +72,17 @@ tr.selected { background: #e0edff; }
 .wallet-header .wallet-id { color: #666; font-size: 0.85em; }
 .wallet-header .progress { font-size: 0.85em; color: #888; }
 
+/* Collapsible sections */
+.collapsible { margin-bottom: 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+.collapsible-header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; cursor: pointer; user-select: none; }
+.collapsible-header:hover { background: #f0f4f8; border-radius: 6px; }
+.collapsible-header h3 { font-size: 0.95em; margin: 0; }
+.collapsible-caret { display: inline-block; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #666; transition: transform 0.15s; }
+.collapsible.open .collapsible-caret { transform: rotate(0deg); }
+.collapsible:not(.open) .collapsible-caret { transform: rotate(-90deg); }
+.collapsible-body { padding: 0 16px 12px; }
+.collapsible:not(.open) .collapsible-body { display: none; }
+
 /* Address generation */
 .addr-section { margin-bottom: 16px; padding: 12px 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
 .addr-section h3 { font-size: 0.95em; margin-bottom: 8px; }
@@ -95,24 +106,29 @@ tr.selected { background: #e0edff; }
 
 <div class="container">
   <!-- Register UFVK -->
-  <div class="panel">
-    <h2>Register UFVK</h2>
-    <div class="form-group">
-      <label for="reg-ufvk">UFVK</label>
-      <textarea id="reg-ufvk" placeholder="uview1..."></textarea>
+  <div class="panel collapsible">
+    <div class="collapsible-header" onclick="toggleCollapsible(this)">
+      <span class="collapsible-caret"></span>
+      <h2 style="margin-bottom:0;">Register UFVK</h2>
     </div>
-    <div style="display:flex;gap:12px;">
-      <div class="form-group" style="flex:1;">
-        <label for="reg-birthday">Birthday Height</label>
-        <input id="reg-birthday" type="number" placeholder="e.g. 2700000">
+    <div class="collapsible-body">
+      <div class="form-group">
+        <label for="reg-ufvk">UFVK</label>
+        <textarea id="reg-ufvk" placeholder="uview1..."></textarea>
       </div>
-      <div class="form-group" style="flex:1;">
-        <label for="reg-name">Name (optional)</label>
-        <input id="reg-name" type="text" placeholder="My Wallet">
+      <div style="display:flex;gap:12px;">
+        <div class="form-group" style="flex:1;">
+          <label for="reg-birthday">Birthday Height</label>
+          <input id="reg-birthday" type="number" placeholder="e.g. 2700000">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label for="reg-name">Name (optional)</label>
+          <input id="reg-name" type="text" placeholder="My Wallet">
+        </div>
       </div>
+      <button class="btn btn-primary" onclick="registerUfvk()">Register</button>
+      <div id="reg-msg"></div>
     </div>
-    <button class="btn btn-primary" onclick="registerUfvk()">Register</button>
-    <div id="reg-msg"></div>
   </div>
 
   <!-- Wallet List -->
@@ -137,61 +153,95 @@ tr.selected { background: #e0edff; }
     </div>
 
     <!-- Generate Address -->
-    <div class="addr-section">
-      <h3>Generate Address</h3>
-      <div class="addr-row">
-        <div class="form-group">
-          <label for="addr-di">Diversifier Index (optional)</label>
-          <input id="addr-di" type="text" placeholder="auto" style="width:160px;">
-        </div>
-        <div class="form-group">
-          <label for="addr-receivers">Receivers</label>
-          <select id="addr-receivers" style="width:140px;">
-            <option value="">Default</option>
-            <option value="orchard">Orchard</option>
-            <option value="sapling">Sapling</option>
-            <option value="shielded">Shielded</option>
-            <option value="all">All</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" onclick="generateAddress()">Generate</button>
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-caret"></span>
+        <h3>Generate Address</h3>
       </div>
-      <div id="addr-msg"></div>
-      <div id="addr-result" class="addr-result" style="display:none;">
-        <div class="generated-addr mono" id="addr-value" title="Click to copy" onclick="copyAddress()"></div>
-        <div class="di-info" id="addr-di-info"></div>
+      <div class="collapsible-body">
+        <div class="addr-row">
+          <div class="form-group">
+            <label for="addr-di">Diversifier Index (optional)</label>
+            <input id="addr-di" type="text" placeholder="auto" style="width:160px;">
+          </div>
+          <div class="form-group">
+            <label for="addr-receivers">Receivers</label>
+            <select id="addr-receivers" style="width:140px;">
+              <option value="">Default</option>
+              <option value="orchard">Orchard</option>
+              <option value="sapling">Sapling</option>
+              <option value="shielded">Shielded</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="generateAddress()">Generate</button>
+        </div>
+        <div id="addr-msg"></div>
+        <div id="addr-result" class="addr-result" style="display:none;">
+          <div class="generated-addr mono" id="addr-value" title="Click to copy" onclick="copyAddress()"></div>
+          <div class="di-info" id="addr-di-info"></div>
+        </div>
       </div>
     </div>
 
     <!-- Resolve Address -->
-    <div class="addr-section">
-      <h3>Resolve Address</h3>
-      <div class="addr-row">
-        <div class="form-group" style="flex:1;">
-          <label for="resolve-addr">Unified Address</label>
-          <input id="resolve-addr" type="text" placeholder="u1..." style="width:100%;">
-        </div>
-        <button class="btn btn-primary" onclick="resolveAddress()">Resolve</button>
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-caret"></span>
+        <h3>Resolve Address</h3>
       </div>
-      <div id="resolve-msg"></div>
-      <div id="resolve-result" class="addr-result" style="display:none;">
-        <div class="generated-addr mono" id="resolve-value"></div>
+      <div class="collapsible-body">
+        <div class="addr-row">
+          <div class="form-group" style="flex:1;">
+            <label for="resolve-addr">Unified Address</label>
+            <input id="resolve-addr" type="text" placeholder="u1..." style="width:100%;">
+          </div>
+          <button class="btn btn-primary" onclick="resolveAddress()">Resolve</button>
+        </div>
+        <div id="resolve-msg"></div>
+        <div id="resolve-result" class="addr-result" style="display:none;">
+          <div class="generated-addr mono" id="resolve-value"></div>
+        </div>
       </div>
     </div>
 
     <!-- Address Balance -->
-    <div class="addr-section">
-      <h3>Address Balance</h3>
-      <div class="addr-row">
-        <div class="form-group" style="flex:1;">
-          <label for="addrbal-addr">Orchard-only Unified Address</label>
-          <input id="addrbal-addr" type="text" placeholder="u1..." style="width:100%;">
-        </div>
-        <button class="btn btn-primary" onclick="addressBalance()">Balance</button>
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-caret"></span>
+        <h3>Address Balance</h3>
       </div>
-      <div id="addrbal-msg"></div>
-      <div id="addrbal-result" class="addr-result" style="display:none;">
-        <div class="generated-addr mono" id="addrbal-value"></div>
+      <div class="collapsible-body">
+        <div class="addr-row">
+          <div class="form-group" style="flex:1;">
+            <label for="addrbal-addr">Orchard-only Unified Address</label>
+            <input id="addrbal-addr" type="text" placeholder="u1..." style="width:100%;">
+          </div>
+          <button class="btn btn-primary" onclick="addressBalance()">Balance</button>
+        </div>
+        <div id="addrbal-msg"></div>
+        <div id="addrbal-result" class="addr-result" style="display:none;">
+          <div class="generated-addr mono" id="addrbal-value"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transaction Lookup -->
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-caret"></span>
+        <h3>Transaction Lookup</h3>
+      </div>
+      <div class="collapsible-body">
+        <div class="addr-row">
+          <div class="form-group" style="flex:1;">
+            <label for="txlookup-txid">Transaction ID</label>
+            <input id="txlookup-txid" type="text" placeholder="64-character hex txid" style="width:100%;">
+          </div>
+          <button class="btn btn-primary" onclick="lookupTransaction()">Lookup</button>
+        </div>
+        <div id="txlookup-msg"></div>
+        <div id="txlookup-result" style="display:none;"></div>
       </div>
     </div>
 
@@ -553,6 +603,53 @@ async function addressBalance() {
   } catch (e) {
     showMsg('addrbal-msg', e.message, false);
   }
+}
+
+/* ---- Transaction Lookup ---- */
+async function lookupTransaction() {
+  if (!selectedWalletId) return;
+  const txid = document.getElementById('txlookup-txid').value.trim();
+  if (!txid || txid.length !== 64) { showMsg('txlookup-msg', 'Enter a valid 64-character hex txid.', false); return; }
+
+  document.getElementById('txlookup-result').style.display = 'none';
+  document.getElementById('txlookup-msg').innerHTML = '<div class="msg">Looking up...</div>';
+  try {
+    const tx = await apiFetch(`/ufvks/${selectedWalletId}/transactions/${txid}`);
+    document.getElementById('txlookup-msg').innerHTML = '';
+    const delta = Number(tx.account_balance_delta);
+    const cls = delta >= 0 ? 'amt-pos' : 'amt-neg';
+    const sign = delta >= 0 ? '+' : '';
+    let html = '<div class="expand-content" style="margin-top:8px;">';
+    html += `<strong>TxID:</strong> <span class="mono">${tx.txid}</span><br>`;
+    html += `<strong>Height:</strong> ${tx.mined_height || 'unconfirmed'} | <strong>Date:</strong> ${fmtTime(tx.block_time)} | <strong>Confirmations:</strong> ${tx.confirmations != null ? tx.confirmations.toLocaleString() : '-'}<br>`;
+    html += `<strong>Amount:</strong> <span class="${cls}">${sign}${zatToZec(delta)} ZEC</span> | <strong>Fee:</strong> ${tx.fee_paid != null ? zatToZec(tx.fee_paid) + ' ZEC' : '-'}<br>`;
+    html += `<strong>Sent notes:</strong> ${tx.sent_note_count} | <strong>Received:</strong> ${tx.received_note_count} | <strong>Memos:</strong> ${tx.memo_count}`;
+    if (tx.expired_unmined) html += ' | <em>Expired (unmined)</em>';
+    if (tx.outputs.length) {
+      html += '<table><tr><th>Pool</th><th>Index</th><th>Address</th><th>Value (ZEC)</th><th>Change</th><th>Memo</th></tr>';
+      tx.outputs.forEach(o => {
+        html += `<tr>
+          <td>${o.pool}</td>
+          <td class="mono">${o.output_index}</td>
+          <td class="mono">${truncate(o.to_address, 24)}</td>
+          <td class="mono">${zatToZec(o.value)}</td>
+          <td>${o.is_change ? 'yes' : ''}</td>
+          <td class="memo-text">${o.memo || '-'}</td>
+        </tr>`;
+      });
+      html += '</table>';
+    }
+    html += '</div>';
+    const result = document.getElementById('txlookup-result');
+    result.innerHTML = html;
+    result.style.display = '';
+  } catch (e) {
+    showMsg('txlookup-msg', e.message, false);
+  }
+}
+
+function toggleCollapsible(header) {
+  header.parentElement.classList.toggle('open');
 }
 
 function copyAddress() {

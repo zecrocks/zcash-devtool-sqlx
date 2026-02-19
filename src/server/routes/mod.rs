@@ -28,6 +28,10 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
             "/ufvks/{id}/transactions",
             get(transactions::get_transactions),
         )
+        .route(
+            "/ufvks/{id}/transactions/{txid}",
+            get(transactions::get_transaction),
+        )
         .route("/address/resolve", post(address::resolve_address))
         .route("/address/balance", post(address::address_balance))
         .route("/sync/status", get(sync::sync_status))
