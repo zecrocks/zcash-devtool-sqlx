@@ -42,6 +42,7 @@ pub(crate) async fn get_transactions(
     let page = params.page;
     let per_page = params.per_page;
     let sort = params.sort;
+    let confirmed = params.confirmed;
 
     let result = tokio::task::spawn_blocking(move || -> Result<TransactionListResponse, ApiError> {
         let db_path = std::path::PathBuf::from(&wallet_dir).join("data.sqlite");
@@ -67,7 +68,7 @@ pub(crate) async fn get_transactions(
             let _ = conn.busy_timeout(std::time::Duration::from_secs(10));
             let _ = rusqlite::vtab::array::load_module(&conn);
 
-            match query_transactions(&conn, page, per_page, sort, &network) {
+            match query_transactions(&conn, page, per_page, sort, &network, confirmed) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     let msg = format!("{e}");
@@ -324,9 +325,16 @@ fn query_transactions(
     per_page: u64,
     sort: SortOrder,
     network: &str,
+    confirmed: Option<bool>,
 ) -> Result<TransactionListResponse, ApiError> {
+    let where_clause = match confirmed {
+        Some(true) => "WHERE mined_height IS NOT NULL",
+        _ => "WHERE NOT expired_unmined",
+    };
+
+    let count_query = format!("SELECT COUNT(*) FROM v_transactions {where_clause}");
     let total: u64 = conn
-        .query_row("SELECT COUNT(*) FROM v_transactions", [], |row| row.get(0))
+        .query_row(&count_query, [], |row| row.get(0))
         .map_err(|e| ApiError::Internal(format!("Failed to count transactions: {e}")))?;
 
     let tip = chain_tip(conn);
@@ -345,6 +353,7 @@ fn query_transactions(
                     CASE WHEN expiry_height == 0 THEN NULL ELSE expiry_height END
                 ) AS sort_height
          FROM v_transactions
+         {where_clause}
          ORDER BY sort_height {order}
          LIMIT :limit OFFSET :offset"
     );

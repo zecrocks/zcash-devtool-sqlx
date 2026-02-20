@@ -17,6 +17,8 @@ pub(crate) struct PaginationParams {
     pub per_page: u64,
     #[serde(default = "default_sort")]
     pub sort: SortOrder,
+    #[serde(default)]
+    pub confirmed: Option<bool>,
 }
 
 fn default_page() -> u64 {
