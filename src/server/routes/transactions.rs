@@ -327,17 +327,20 @@ fn query_transactions(
     network: &str,
     confirmed: Option<bool>,
 ) -> Result<TransactionListResponse, ApiError> {
+    let tip = chain_tip(conn);
+
     let where_clause = match confirmed {
-        Some(true) => "WHERE mined_height IS NOT NULL",
-        _ => "WHERE NOT expired_unmined",
+        Some(true) => match tip {
+            Some(t) => format!("WHERE mined_height IS NOT NULL AND ({t} - mined_height + 1) >= 10"),
+            None => "WHERE 0".to_string(), // no chain tip means nothing is confirmed
+        },
+        _ => "WHERE NOT expired_unmined".to_string(),
     };
 
     let count_query = format!("SELECT COUNT(*) FROM v_transactions {where_clause}");
     let total: u64 = conn
         .query_row(&count_query, [], |row| row.get(0))
         .map_err(|e| ApiError::Internal(format!("Failed to count transactions: {e}")))?;
-
-    let tip = chain_tip(conn);
     let offset = (page.saturating_sub(1)) * per_page;
 
     let order = match sort {
