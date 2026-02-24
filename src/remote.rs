@@ -141,7 +141,12 @@ impl Server<'_> {
     pub(crate) async fn connect_direct(&self) -> anyhow::Result<CompactTxStreamerClient<Channel>> {
         info!("Connecting to {}", self);
 
-        let channel = Channel::from_shared(self.endpoint())?;
+        let channel = Channel::from_shared(self.endpoint())?
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(120))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true);
 
         let channel = if self.use_tls() {
             let tls = ClientTlsConfig::new()

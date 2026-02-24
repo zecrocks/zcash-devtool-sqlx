@@ -232,8 +232,13 @@ async fn wallet_sync_loop(
             return;
         }
 
-        match run_sync_cycle(wallet_id, &config, &registry).await {
-            Ok(()) => {
+        match tokio::time::timeout(
+            Duration::from_secs(300),
+            run_sync_cycle(wallet_id, &config, &registry),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
                 let _ = registry.lock().await.update_sync_state(
                     wallet_id,
                     "synced",
@@ -243,7 +248,7 @@ async fn wallet_sync_loop(
                     None,
                 );
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("Sync error for wallet {wallet_id}: {e}");
                 let _ = registry.lock().await.update_sync_state(
                     wallet_id,
@@ -252,6 +257,17 @@ async fn wallet_sync_loop(
                     None,
                     None,
                     Some(&e.to_string()),
+                );
+            }
+            Err(_elapsed) => {
+                warn!("Sync cycle for wallet {wallet_id} timed out after 5 minutes, will retry");
+                let _ = registry.lock().await.update_sync_state(
+                    wallet_id,
+                    "error",
+                    None,
+                    None,
+                    None,
+                    Some("sync cycle timed out after 5 minutes"),
                 );
             }
         }
