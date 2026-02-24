@@ -122,7 +122,8 @@ pub(crate) async fn generate_address(
                     if msg.contains("database is locked") {
                         continue;
                     }
-                    return Err(ApiError::Internal(format!("Failed to open wallet db: {e}")));
+                    tracing::warn!("Failed to open wallet db: {e}");
+                    return Err(ApiError::Internal("Failed to open wallet database".into()));
                 }
             };
             let mut db_data = WalletDb::from_connection(conn, params, SystemClock, OsRng);
@@ -409,9 +410,10 @@ pub(crate) async fn address_balance(
                             if msg.contains("database is locked") {
                                 continue;
                             }
-                            return Err(ApiError::Internal(format!(
-                                "Failed to open wallet db: {e}"
-                            )));
+                            tracing::warn!("Failed to open wallet db: {e}");
+                            return Err(ApiError::Internal(
+                                "Failed to open wallet database".into(),
+                            ));
                         }
                     };
 

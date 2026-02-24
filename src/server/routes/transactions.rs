@@ -60,7 +60,8 @@ pub(crate) async fn get_transactions(
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    last_err = Some(format!("Failed to open wallet db: {e}"));
+                    tracing::warn!("Failed to open wallet db: {e}");
+                    last_err = Some("Failed to open wallet database".into());
                     continue;
                 }
             };
@@ -122,7 +123,8 @@ pub(crate) async fn get_transaction(
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    last_err = Some(format!("Failed to open wallet db: {e}"));
+                    tracing::warn!("Failed to open wallet db: {e}");
+                    last_err = Some("Failed to open wallet database".into());
                     continue;
                 }
             };

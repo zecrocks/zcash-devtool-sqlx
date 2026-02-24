@@ -95,13 +95,11 @@ fn vacuum_orphaned_dirs(data_dir: &str, registry: &WalletRegistry) {
             continue;
         }
 
-        let dir_name = match entry.file_name().into_string() {
-            Ok(name) => name,
-            Err(_) => continue,
-        };
-
-        if !active_dirs.contains(&dir_name) {
-            info!("Removing orphaned wallet directory: {dir_name}");
+        // wallet_dir in the registry is stored as a full path (e.g. "/data/wallets/abc123"),
+        // so we compare against the full path of each on-disk entry.
+        let full_path = path.to_string_lossy().to_string();
+        if !active_dirs.contains(&full_path) {
+            info!("Removing orphaned wallet directory: {}", path.display());
             if let Err(e) = std::fs::remove_dir_all(&path) {
                 warn!("Failed to remove orphaned directory {}: {e}", path.display());
             }

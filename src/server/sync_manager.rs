@@ -21,10 +21,12 @@ use zcash_client_backend::{
         },
         scanning::{ScanPriority, ScanRange},
         wallet::{decrypt_and_store_transaction, ConfirmationsPolicy},
-        TransactionDataRequest, TransactionStatus, WalletCommitmentTrees, WalletRead, WalletWrite,
+        AccountBirthday, AccountPurpose, TransactionDataRequest, TransactionStatus,
+        WalletCommitmentTrees, WalletRead, WalletWrite,
     },
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient, BlockId},
 };
+use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
     util::SystemClock,
@@ -33,8 +35,12 @@ use zcash_client_sqlite::{
 use zcash_primitives::{merkle_tree::HashSer, transaction::{Transaction, TxId}};
 use zcash_protocol::consensus::{self, BlockHeight, BranchId, Parameters};
 
+use zcash_address::unified::{self, Encoding};
+use zcash_protocol::consensus::NetworkUpgrade;
+
 use crate::{
-    data::{get_block_path, get_db_paths},
+    config::WalletConfig,
+    data::{get_block_path, get_db_paths, init_dbs},
     error,
     remote::ConnectionMode,
     server::{registry::WalletRegistry, DaemonConfig, SyncCommand},
@@ -283,6 +289,82 @@ async fn wallet_sync_loop(
     }
 }
 
+/// Reinitialize a wallet directory from registry metadata. This recreates keys.toml,
+/// databases, and reimports the UFVK so the wallet can resync from its birthday height.
+async fn reinitialize_wallet_dir(
+    wallet_dir: &str,
+    wallet_id: &str,
+    name: Option<&str>,
+    ufvk_str: &str,
+    birthday_height: u32,
+    params: consensus::Network,
+    client: &mut CompactTxStreamerClient<Channel>,
+) -> Result<(), anyhow::Error> {
+    // Compute effective birthday (clamp to sapling activation)
+    let sapling_activation = params
+        .activation_height(NetworkUpgrade::Sapling)
+        .expect("Sapling activation must be defined");
+    let effective_birthday = if birthday_height < u32::from(sapling_activation) {
+        sapling_activation
+    } else {
+        BlockHeight::from_u32(birthday_height)
+    };
+
+    // 1. Create directory + keys.toml
+    WalletConfig::init_without_mnemonic(Some(wallet_dir), effective_birthday, params)?;
+
+    // 2. Init databases
+    let mut db_data = init_dbs(params, Some(&wallet_dir.to_string()))?;
+
+    // 3. Fetch tree state at birthday-1 for the account birthday
+    let tip_height: BlockHeight = client
+        .get_latest_block(service::ChainSpec::default())
+        .await?
+        .get_ref()
+        .height
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid block height from server"))?;
+
+    let tree_request = service::BlockId {
+        height: u32::from(effective_birthday).saturating_sub(1).into(),
+        ..Default::default()
+    };
+    let treestate = client
+        .get_tree_state(tree_request)
+        .await?
+        .into_inner();
+
+    let account_birthday = AccountBirthday::from_treestate(treestate, Some(tip_height))
+        .map_err(|_| anyhow::anyhow!("Invalid tree state from server"))?;
+
+    // 4. Parse and import UFVK
+    let (network, ufvk_parsed) = unified::Ufvk::decode(ufvk_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse UFVK: {e}"))?;
+
+    // Verify network matches
+    let expected_network = match params {
+        consensus::Network::MainNetwork => consensus::NetworkType::Main,
+        consensus::Network::TestNetwork => consensus::NetworkType::Test,
+    };
+    if network != expected_network {
+        return Err(anyhow::anyhow!("UFVK network mismatch"));
+    }
+
+    let ufvk = UnifiedFullViewingKey::parse(&ufvk_parsed)
+        .map_err(|e| anyhow::anyhow!("Failed to parse UFVK components: {e}"))?;
+
+    let account_name = name.unwrap_or(wallet_id);
+    db_data.import_account_ufvk(
+        account_name,
+        &ufvk,
+        &account_birthday,
+        AccountPurpose::ViewOnly,
+        None,
+    )?;
+
+    Ok(())
+}
+
 async fn run_sync_cycle(
     wallet_id: &str,
     config: &DaemonConfig,
@@ -321,8 +403,26 @@ async fn run_sync_cycle(
         ConnectionMode::BuiltInTor => server.connect_direct().await?,
     };
 
-    // Open databases (owned by this task, on a single thread — no Send required)
+    // If the wallet directory is missing (e.g. deleted by vacuum or crash),
+    // reinitialize it from registry metadata so it can resync from birthday.
     let (fsblockdb_root, db_data_path) = get_db_paths(Some(&wallet.wallet_dir));
+    if !db_data_path.exists() {
+        info!(
+            "Wallet directory missing for {wallet_id}, reinitializing from registry metadata"
+        );
+        reinitialize_wallet_dir(
+            &wallet.wallet_dir,
+            wallet_id,
+            wallet.name.as_deref(),
+            &wallet.ufvk,
+            wallet.birthday,
+            params,
+            &mut client,
+        )
+        .await?;
+    }
+
+    // Open databases (owned by this task, on a single thread — no Send required)
     let fsblockdb_root_path = fsblockdb_root.as_path();
     let mut db_cache = FsBlockDb::for_path(fsblockdb_root_path).map_err(error::Error::from)?;
     init_blockmeta_db(&mut db_cache)?;

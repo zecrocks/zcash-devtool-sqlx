@@ -46,7 +46,10 @@ pub(crate) async fn get_balance(
             }
 
             let conn = crate::server::db::open_wallet_connection(&db_data_path)
-                .map_err(|e| ApiError::Internal(format!("Failed to open wallet db: {e}")))?;
+                .map_err(|e| {
+                    tracing::warn!("Failed to open wallet db: {e}");
+                    ApiError::Internal("Failed to open wallet database".into())
+                })?;
             let db_data = WalletDb::from_connection(conn, params, (), ());
 
             let account = match select_account(&db_data, None) {
