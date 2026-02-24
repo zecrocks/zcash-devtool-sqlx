@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub(crate) struct RegisterUfvkRequest {
     pub ufvk: String,
-    pub birthday: u32,
+    #[serde(default)]
+    pub birthday: Option<u32>,
     pub name: Option<String>,
 }
 

@@ -14,7 +14,7 @@ use zcash_client_backend::{
     proto::service,
 };
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus;
+use zcash_protocol::consensus::{self, NetworkUpgrade, Parameters};
 
 use crate::{
     config::WalletConfig,
@@ -61,8 +61,21 @@ pub(crate) async fn register_ufvk(
 
     let network = Network::from(params);
 
-    // 4. Derive deterministic wallet ID
-    let wallet_id = derive_wallet_id(&req.ufvk, req.birthday);
+    // 4. Resolve birthday
+    let raw_birthday = req.birthday.unwrap_or(0);
+
+    // Use raw birthday for wallet ID (deterministic, independent of network params)
+    let wallet_id = derive_wallet_id(&req.ufvk, raw_birthday);
+
+    // Compute effective birthday: clamp to Sapling activation height
+    let sapling_activation = params
+        .activation_height(NetworkUpgrade::Sapling)
+        .expect("Sapling activation must be defined");
+    let effective_birthday = if raw_birthday < u32::from(sapling_activation) {
+        sapling_activation
+    } else {
+        consensus::BlockHeight::from_u32(raw_birthday)
+    };
 
     // 5. Check if this ID already exists (same UFVK + birthday)
     {
@@ -87,59 +100,71 @@ pub(crate) async fn register_ufvk(
     let wallet_dir_str = wallet_dir_path.to_string_lossy().to_string();
 
     // 6. Create wallet directory and init keys.toml
-    let birthday_height = zcash_protocol::consensus::BlockHeight::from_u32(req.birthday);
-    WalletConfig::init_without_mnemonic(Some(&wallet_dir_str), birthday_height, params)
+    WalletConfig::init_without_mnemonic(Some(&wallet_dir_str), effective_birthday, params)
         .map_err(|e| ApiError::Internal(format!("Failed to init wallet config: {e}")))?;
 
-    // 7. Init databases
-    let mut db_data = init_dbs(params, Some(&wallet_dir_str))
-        .map_err(|e| ApiError::Internal(format!("Failed to init databases: {e}")))?;
+    // 7-9. Init databases, fetch tree state, import UFVK.
+    // Wrap in a closure so we can clean up the wallet directory on any error.
+    let setup_result: Result<(), ApiError> = async {
+        // 7. Init databases
+        let mut db_data = init_dbs(params, Some(&wallet_dir_str))
+            .map_err(|e| ApiError::Internal(format!("Failed to init databases: {e}")))?;
 
-    // 8. Connect to lightwalletd and fetch tree state at birthday-1
-    let servers = match network {
-        Network::Main => &state.config.mainnet_server,
-        Network::Test => &state.config.testnet_server,
-    };
-    let server = servers
-        .pick(params)
-        .map_err(|e| ApiError::Internal(format!("No server for network: {e}")))?;
-    let mut client = match &state.config.connection_mode {
-        ConnectionMode::Direct => server.connect_direct().await,
-        ConnectionMode::SocksProxy(addr) => server.connect_over_socks(*addr).await,
-        ConnectionMode::BuiltInTor => {
-            // For the server context, we use direct connection as default
-            server.connect_direct().await
+        // 8. Connect to lightwalletd and fetch tree state at birthday-1
+        let servers = match network {
+            Network::Main => &state.config.mainnet_server,
+            Network::Test => &state.config.testnet_server,
+        };
+        let server = servers
+            .pick(params)
+            .map_err(|e| ApiError::Internal(format!("No server for network: {e}")))?;
+        let mut client = match &state.config.connection_mode {
+            ConnectionMode::Direct => server.connect_direct().await,
+            ConnectionMode::SocksProxy(addr) => server.connect_over_socks(*addr).await,
+            ConnectionMode::BuiltInTor => {
+                // For the server context, we use direct connection as default
+                server.connect_direct().await
+            }
         }
+        .map_err(|e| ApiError::Internal(format!("Failed to connect to lightwalletd: {e}")))?;
+
+        let tip_height: consensus::BlockHeight = client
+            .get_latest_block(service::ChainSpec::default())
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get latest block: {e}")))?
+            .get_ref()
+            .height
+            .try_into()
+            .map_err(|_| ApiError::Internal("Invalid block height from server".into()))?;
+
+        let tree_request = service::BlockId {
+            height: u32::from(effective_birthday).saturating_sub(1).into(),
+            ..Default::default()
+        };
+        let treestate = client
+            .get_tree_state(tree_request)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get tree state: {e}")))?
+            .into_inner();
+
+        let birthday = AccountBirthday::from_treestate(treestate, Some(tip_height))
+            .map_err(|_| ApiError::Internal("Invalid tree state from server".into()))?;
+
+        // 9. Import the UFVK as view-only
+        let name = req.name.clone().unwrap_or_else(|| wallet_id.clone());
+        db_data
+            .import_account_ufvk(&name, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
+            .map_err(|e| ApiError::Internal(format!("Failed to import UFVK: {e}")))?;
+
+        Ok(())
     }
-    .map_err(|e| ApiError::Internal(format!("Failed to connect to lightwalletd: {e}")))?;
+    .await;
 
-    let tip_height: zcash_protocol::consensus::BlockHeight = client
-        .get_latest_block(service::ChainSpec::default())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get latest block: {e}")))?
-        .get_ref()
-        .height
-        .try_into()
-        .map_err(|_| ApiError::Internal("Invalid block height from server".into()))?;
-
-    let tree_request = service::BlockId {
-        height: (req.birthday.saturating_sub(1)).into(),
-        ..Default::default()
-    };
-    let treestate = client
-        .get_tree_state(tree_request)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get tree state: {e}")))?
-        .into_inner();
-
-    let birthday = AccountBirthday::from_treestate(treestate, Some(tip_height))
-        .map_err(|_| ApiError::Internal("Invalid tree state from server".into()))?;
-
-    // 9. Import the UFVK as view-only
-    let name = req.name.clone().unwrap_or_else(|| wallet_id.clone());
-    db_data
-        .import_account_ufvk(&name, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
-        .map_err(|e| ApiError::Internal(format!("Failed to import UFVK: {e}")))?;
+    // Clean up wallet directory on error
+    if let Err(e) = setup_result {
+        let _ = std::fs::remove_dir_all(&wallet_dir_path);
+        return Err(e);
+    }
 
     // 10. Insert into registry
     {
@@ -150,7 +175,7 @@ pub(crate) async fn register_ufvk(
             &ufvk_hash,
             req.name.as_deref(),
             network.name(),
-            req.birthday,
+            raw_birthday,
             &wallet_dir_str,
         )?;
     }
@@ -163,7 +188,7 @@ pub(crate) async fn register_ufvk(
         Json(RegisterUfvkResponse {
             id: wallet_id,
             network: network.name().to_string(),
-            birthday: req.birthday,
+            birthday: raw_birthday,
             name: req.name,
         }),
     ))
