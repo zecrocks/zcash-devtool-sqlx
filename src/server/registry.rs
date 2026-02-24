@@ -26,6 +26,7 @@ pub(crate) struct WatchedWallet {
     pub birthday: u32,
     pub wallet_dir: String,
     pub created_at: String,
+    pub transparent_sync: bool,
 }
 
 impl WalletRegistry {
@@ -65,6 +66,19 @@ impl WalletRegistry {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_ufvk_birthday
                 ON watched_wallets(ufvk_hash, birthday) WHERE deleted_at IS NULL;",
         )?;
+
+        // Add transparent_sync column if it doesn't exist yet.
+        let has_col: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('watched_wallets') WHERE name = 'transparent_sync'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_col {
+            self.conn.execute_batch(
+                "ALTER TABLE watched_wallets ADD COLUMN transparent_sync INTEGER NOT NULL DEFAULT 1;",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -79,11 +93,12 @@ impl WalletRegistry {
         network: &str,
         birthday: u32,
         wallet_dir: &str,
+        transparent_sync: bool,
     ) -> Result<(), anyhow::Error> {
         self.conn.execute(
-            "INSERT INTO watched_wallets (id, ufvk, ufvk_hash, name, network, birthday, wallet_dir)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, ufvk, ufvk_hash, name, network, birthday, wallet_dir],
+            "INSERT INTO watched_wallets (id, ufvk, ufvk_hash, name, network, birthday, wallet_dir, transparent_sync)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, ufvk, ufvk_hash, name, network, birthday, wallet_dir, transparent_sync as i32],
         )?;
         self.conn.execute(
             "INSERT INTO sync_state (wallet_id) VALUES (?1)",
@@ -97,7 +112,7 @@ impl WalletRegistry {
         let row = self
             .conn
             .query_row(
-                "SELECT id, ufvk, name, network, birthday, wallet_dir, created_at
+                "SELECT id, ufvk, name, network, birthday, wallet_dir, created_at, transparent_sync
                  FROM watched_wallets WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| {
@@ -109,6 +124,7 @@ impl WalletRegistry {
                         birthday: row.get(4)?,
                         wallet_dir: row.get(5)?,
                         created_at: row.get(6)?,
+                        transparent_sync: row.get::<_, i32>(7)? != 0,
                     })
                 },
             )
@@ -232,6 +248,15 @@ impl WalletRegistry {
         Ok(affected > 0)
     }
 
+    /// Update the transparent_sync preference for a wallet. Returns true if updated.
+    pub fn update_transparent_sync(&self, id: &str, enabled: bool) -> Result<bool, anyhow::Error> {
+        let affected = self.conn.execute(
+            "UPDATE watched_wallets SET transparent_sync = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, enabled as i32],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// List all active (non-deleted) wallet IDs.
     pub fn list_active_wallet_ids(&self) -> Result<Vec<String>, anyhow::Error> {
         let mut stmt = self
@@ -241,6 +266,17 @@ impl WalletRegistry {
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
+    }
+
+    /// List all active (non-deleted) wallet directory names.
+    pub fn list_active_wallet_dirs(&self) -> Result<std::collections::HashSet<String>, anyhow::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT wallet_dir FROM watched_wallets WHERE deleted_at IS NULL")?;
+        let dirs = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        Ok(dirs)
     }
 
     /// Count wallets by network.

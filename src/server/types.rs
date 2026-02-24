@@ -8,6 +8,12 @@ pub(crate) struct RegisterUfvkRequest {
     #[serde(default)]
     pub birthday: Option<u32>,
     pub name: Option<String>,
+    #[serde(default = "default_true")]
+    pub transparent_sync: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +67,7 @@ pub(crate) struct RegisterUfvkResponse {
     pub network: String,
     pub birthday: u32,
     pub name: Option<String>,
+    pub transparent_sync: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +97,7 @@ pub(crate) struct UfvkDetailResponse {
     pub birthday: u32,
     pub created_at: String,
     pub sync_status: Option<SyncStatusEntry>,
+    pub transparent_sync: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -169,6 +177,17 @@ pub(crate) struct SyncWalletStatus {
 pub(crate) struct DeleteResponse {
     pub id: String,
     pub deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpdateWalletPrefsRequest {
+    pub transparent_sync: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UpdateWalletPrefsResponse {
+    pub id: String,
+    pub transparent_sync: bool,
 }
 
 #[derive(Debug, Deserialize)]

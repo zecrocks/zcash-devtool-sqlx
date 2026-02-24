@@ -126,6 +126,9 @@ tr.selected { background: #e0edff; }
           <input id="reg-name" type="text" placeholder="My Wallet">
         </div>
       </div>
+      <div class="form-group" style="margin-top:4px;">
+        <label><input id="reg-transparent-sync" type="checkbox" checked> Sync transparent</label>
+      </div>
       <button class="btn btn-primary" onclick="registerUfvk()">Register</button>
       <div id="reg-msg"></div>
     </div>
@@ -150,6 +153,7 @@ tr.selected { background: #e0edff; }
       <span class="balance mono" id="tx-balance"></span>
       <span class="wallet-id mono" id="tx-wallet-id"></span>
       <span class="progress" id="tx-progress"></span>
+      <label style="font-size:0.85em;margin-left:auto;cursor:pointer;"><input id="tx-transparent-sync" type="checkbox" onchange="toggleTransparentSync(this.checked)"> Transparent sync</label>
     </div>
 
     <!-- Generate Address -->
@@ -331,12 +335,13 @@ async function registerUfvk() {
   const ufvk = document.getElementById('reg-ufvk').value.trim();
   const birthday = parseInt(document.getElementById('reg-birthday').value, 10);
   const name = document.getElementById('reg-name').value.trim() || undefined;
+  const transparent_sync = document.getElementById('reg-transparent-sync').checked;
   if (!ufvk || !birthday) { showMsg('reg-msg', 'UFVK and birthday are required.', false); return; }
   try {
     const data = await apiFetch('/ufvks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ufvk, birthday, name }),
+      body: JSON.stringify({ ufvk, birthday, name, transparent_sync }),
     });
     showMsg('reg-msg', `Registered! Wallet ID: ${data.id} (${data.network})`, true);
     loadWallets(1);
@@ -410,9 +415,31 @@ async function selectWallet(id) {
     if (r.onclick && r.onclick.toString().includes(id)) r.classList.add('selected');
   });
 
+  // load wallet detail to get transparent_sync state
+  try {
+    const detail = await apiFetch(`/ufvks/${id}`);
+    document.getElementById('tx-transparent-sync').checked = detail.transparent_sync;
+  } catch (_) {}
+
   // load balance + transactions in parallel
   loadBalance(id);
   loadTransactions(1);
+}
+
+async function toggleTransparentSync(enabled) {
+  if (!selectedWalletId) return;
+  const cb = document.getElementById('tx-transparent-sync');
+  try {
+    await apiFetch(`/ufvks/${selectedWalletId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transparent_sync: enabled }),
+    });
+  } catch (e) {
+    // Revert on error
+    cb.checked = !enabled;
+    alert('Failed to update transparent sync: ' + e.message);
+  }
 }
 
 async function loadBalance(id) {

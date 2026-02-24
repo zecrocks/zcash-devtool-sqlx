@@ -122,14 +122,25 @@ impl Command {
             SecretVec::new(secret)
         };
 
-        Self::init_dbs(
+        let result = Self::init_dbs(
             params,
             wallet_dir.as_ref(),
             &opts.name,
             &seed,
             birthday,
             None,
-        )
+        );
+
+        // Clean up wallet directory if DB init / account creation failed
+        if result.is_err() {
+            let wallet_dir = wallet_dir
+                .as_ref()
+                .map(|p| std::path::Path::new(p.as_str()))
+                .unwrap_or(std::path::Path::new(crate::data::DEFAULT_WALLET_DIR));
+            let _ = std::fs::remove_dir_all(wallet_dir);
+        }
+
+        result
     }
 
     pub(crate) async fn get_wallet_birthday(

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
@@ -22,6 +22,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/ufvks", get(ufvk::list_ufvks))
         .route("/ufvks/{id}", get(ufvk::get_ufvk))
         .route("/ufvks/{id}", delete(ufvk::delete_ufvk))
+        .route("/ufvks/{id}", patch(ufvk::update_wallet_prefs))
         .route("/ufvks/{id}/address", post(address::generate_address))
         .route("/ufvks/{id}/balance", get(balance::get_balance))
         .route(

@@ -348,17 +348,19 @@ async fn run_sync_cycle(
         )?;
     }
 
-    // 3. Refresh UTXOs
+    // 3. Refresh UTXOs (only if transparent sync is enabled for this wallet)
     #[cfg(feature = "transparent-inputs")]
-    for account_id in db_data.get_account_ids()? {
-        refresh_utxos(
-            &params,
-            &mut client,
-            &mut db_data,
-            account_id,
-            BlockHeight::from(0),
-        )
-        .await?;
+    if wallet.transparent_sync {
+        for account_id in db_data.get_account_ids()? {
+            refresh_utxos(
+                &params,
+                &mut client,
+                &mut db_data,
+                account_id,
+                BlockHeight::from(0),
+            )
+            .await?;
+        }
     }
 
     // 4. Suggest scan ranges and process them
@@ -461,14 +463,14 @@ async fn run_sync_cycle(
         if scan_ranges_updated {
             // New scan ranges were discovered; enhance what we have so far, then restart.
             info!("Enhancing transactions for wallet {wallet_id}");
-            enhance_transactions(&mut client, &params, &mut db_data, chain_tip).await?;
+            enhance_transactions(&mut client, &params, &mut db_data, chain_tip, wallet.transparent_sync).await?;
             return Ok(());
         }
     }
 
     // 5. Enhance transactions (fetch full tx data, decrypt memos)
     info!("Enhancing transactions for wallet {wallet_id}");
-    enhance_transactions(&mut client, &params, &mut db_data, chain_tip).await?;
+    enhance_transactions(&mut client, &params, &mut db_data, chain_tip, wallet.transparent_sync).await?;
 
     Ok(())
 }
@@ -525,6 +527,7 @@ async fn enhance_transactions<P: Parameters>(
     params: &P,
     db_data: &mut WalletDb<rusqlite::Connection, P, SystemClock, OsRng>,
     chain_tip: BlockHeight,
+    transparent_sync: bool,
 ) -> Result<(), anyhow::Error> {
     let mut satisfied_requests = BTreeSet::new();
     loop {
@@ -569,7 +572,7 @@ async fn enhance_transactions<P: Parameters>(
                     }
                 }
                 #[cfg(feature = "transparent-inputs")]
-                TransactionDataRequest::TransactionsInvolvingAddress(tia) => {
+                TransactionDataRequest::TransactionsInvolvingAddress(tia) if transparent_sync => {
                     let address = tia.address().encode(params);
                     let request = service::TransparentAddressBlockFilter {
                         address: address.clone(),
@@ -598,6 +601,10 @@ async fn enhance_transactions<P: Parameters>(
                         );
                         decrypt_and_store_transaction(params, db_data, &tx, mined_height)?;
                     }
+                }
+                #[cfg(feature = "transparent-inputs")]
+                TransactionDataRequest::TransactionsInvolvingAddress(_) => {
+                    info!("Skipping TransactionsInvolvingAddress: transparent sync disabled for this wallet");
                 }
                 #[cfg(not(feature = "transparent-inputs"))]
                 TransactionDataRequest::TransactionsInvolvingAddress(_) => {

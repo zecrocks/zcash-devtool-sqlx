@@ -24,7 +24,8 @@ use crate::{
         error::ApiError,
         types::{
             DeleteResponse, PaginationParams, RegisterUfvkRequest, RegisterUfvkResponse,
-            UfvkDetailResponse, UfvkListResponse,
+            UfvkDetailResponse, UfvkListResponse, UpdateWalletPrefsRequest,
+            UpdateWalletPrefsResponse,
         },
         AppState, SyncCommand,
     },
@@ -99,13 +100,13 @@ pub(crate) async fn register_ufvk(
         .join(&wallet_id);
     let wallet_dir_str = wallet_dir_path.to_string_lossy().to_string();
 
-    // 6. Create wallet directory and init keys.toml
-    WalletConfig::init_without_mnemonic(Some(&wallet_dir_str), effective_birthday, params)
-        .map_err(|e| ApiError::Internal(format!("Failed to init wallet config: {e}")))?;
-
-    // 7-9. Init databases, fetch tree state, import UFVK.
-    // Wrap in a closure so we can clean up the wallet directory on any error.
+    // 6-10. Create wallet, init databases, fetch tree state, import UFVK, register.
+    // Wrap everything after directory creation in a block so we can clean up on any error.
     let setup_result: Result<(), ApiError> = async {
+        // 6. Create wallet directory and init keys.toml
+        WalletConfig::init_without_mnemonic(Some(&wallet_dir_str), effective_birthday, params)
+            .map_err(|e| ApiError::Internal(format!("Failed to init wallet config: {e}")))?;
+
         // 7. Init databases
         let mut db_data = init_dbs(params, Some(&wallet_dir_str))
             .map_err(|e| ApiError::Internal(format!("Failed to init databases: {e}")))?;
@@ -156,18 +157,7 @@ pub(crate) async fn register_ufvk(
             .import_account_ufvk(&name, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
             .map_err(|e| ApiError::Internal(format!("Failed to import UFVK: {e}")))?;
 
-        Ok(())
-    }
-    .await;
-
-    // Clean up wallet directory on error
-    if let Err(e) = setup_result {
-        let _ = std::fs::remove_dir_all(&wallet_dir_path);
-        return Err(e);
-    }
-
-    // 10. Insert into registry
-    {
+        // 10. Insert into registry
         let registry = state.registry.lock().await;
         registry.insert_wallet(
             &wallet_id,
@@ -177,7 +167,17 @@ pub(crate) async fn register_ufvk(
             network.name(),
             raw_birthday,
             &wallet_dir_str,
+            req.transparent_sync,
         )?;
+
+        Ok(())
+    }
+    .await;
+
+    // Clean up wallet directory on error
+    if let Err(e) = setup_result {
+        let _ = std::fs::remove_dir_all(&wallet_dir_path);
+        return Err(e);
     }
 
     // 11. Signal sync manager to start syncing
@@ -190,6 +190,7 @@ pub(crate) async fn register_ufvk(
             network: network.name().to_string(),
             birthday: raw_birthday,
             name: req.name,
+            transparent_sync: req.transparent_sync,
         }),
     ))
 }
@@ -227,6 +228,7 @@ pub(crate) async fn get_ufvk(
         birthday: wallet.birthday,
         created_at: wallet.created_at,
         sync_status,
+        transparent_sync: wallet.transparent_sync,
     }))
 }
 
@@ -247,4 +249,28 @@ pub(crate) async fn delete_ufvk(
     let _ = state.sync_tx.send(SyncCommand::StopSync(id.clone())).await;
 
     Ok(Json(DeleteResponse { id, deleted: true }))
+}
+
+pub(crate) async fn update_wallet_prefs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateWalletPrefsRequest>,
+) -> Result<Json<UpdateWalletPrefsResponse>, ApiError> {
+    let registry = state.registry.lock().await;
+
+    // Get current wallet to verify it exists and get current values
+    let wallet = registry
+        .get_wallet(&id)?
+        .ok_or_else(|| ApiError::NotFound(format!("Wallet {id} not found")))?;
+
+    let transparent_sync = req.transparent_sync.unwrap_or(wallet.transparent_sync);
+
+    if transparent_sync != wallet.transparent_sync {
+        registry.update_transparent_sync(&id, transparent_sync)?;
+    }
+
+    Ok(Json(UpdateWalletPrefsResponse {
+        id,
+        transparent_sync,
+    }))
 }

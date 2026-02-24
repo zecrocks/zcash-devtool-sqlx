@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use clap::Args;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     remote::{ConnectionMode, Servers},
@@ -48,7 +48,7 @@ pub(crate) struct Command {
     server: Servers,
 
     /// Lightwalletd server for testnet
-    #[arg(long, default_value = "ecc", value_parser = Servers::parse)]
+    #[arg(long, default_value = "zecrocks", value_parser = Servers::parse)]
     testnet_server: Servers,
 
     /// Connection mode: direct, tor, or socks5://host:port
@@ -58,6 +58,55 @@ pub(crate) struct Command {
     /// Seconds between sync cycles
     #[arg(long, default_value = "60")]
     sync_interval: u64,
+}
+
+/// Remove wallet directories on disk that don't correspond to any active registry entry.
+/// This cleans up orphans from crashes during registration or soft-deleted wallets.
+fn vacuum_orphaned_dirs(data_dir: &str, registry: &WalletRegistry) {
+    let wallets_path = format!("{data_dir}/wallets");
+
+    let active_dirs = match registry.list_active_wallet_dirs() {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            warn!("Failed to query active wallet dirs, skipping vacuum: {e}");
+            return;
+        }
+    };
+
+    let entries = match std::fs::read_dir(&wallets_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!("Failed to read wallets directory, skipping vacuum: {e}");
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to read directory entry: {e}");
+                continue;
+            }
+        };
+
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let dir_name = match entry.file_name().into_string() {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+
+        if !active_dirs.contains(&dir_name) {
+            info!("Removing orphaned wallet directory: {dir_name}");
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                warn!("Failed to remove orphaned directory {}: {e}", path.display());
+            }
+        }
+    }
 }
 
 impl Command {
@@ -77,6 +126,9 @@ impl Command {
         // Open registry database
         let registry_path = format!("{}/registry.sqlite", self.data_dir);
         let registry = WalletRegistry::open(&registry_path)?;
+        // Vacuum orphaned wallet directories before starting
+        vacuum_orphaned_dirs(&self.data_dir, &registry);
+
         let registry = Arc::new(Mutex::new(registry));
 
         // Create cancellation token for graceful shutdown

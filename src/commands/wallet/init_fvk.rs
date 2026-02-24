@@ -110,9 +110,21 @@ impl Command {
         // Save the wallet config to disk.
         WalletConfig::init_without_mnemonic(wallet_dir.as_ref(), birthday.height(), network)?;
 
-        let mut wallet_db = init_dbs(network, wallet_dir.as_ref())?;
-        wallet_db.import_account_ufvk(&opts.name, &ufvk, &birthday, purpose, None)?;
+        let result: Result<(), anyhow::Error> = (|| {
+            let mut wallet_db = init_dbs(network, wallet_dir.as_ref())?;
+            wallet_db.import_account_ufvk(&opts.name, &ufvk, &birthday, purpose, None)?;
+            Ok(())
+        })();
 
-        Ok(())
+        // Clean up wallet directory if DB init / account import failed
+        if result.is_err() {
+            let wallet_dir = wallet_dir
+                .as_ref()
+                .map(|p| std::path::Path::new(p.as_str()))
+                .unwrap_or(std::path::Path::new(crate::data::DEFAULT_WALLET_DIR));
+            let _ = std::fs::remove_dir_all(wallet_dir);
+        }
+
+        result
     }
 }
