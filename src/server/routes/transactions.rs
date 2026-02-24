@@ -338,6 +338,7 @@ fn query_transactions(
         },
         _ => "WHERE NOT expired_unmined".to_string(),
     };
+    let where_clause = format!("{where_clause} AND raw IS NOT NULL");
 
     let count_query = format!("SELECT COUNT(*) FROM v_transactions {where_clause}");
     let total: u64 = conn
@@ -454,7 +455,7 @@ fn query_transaction_by_txid(
             "SELECT mined_height, txid, account_balance_delta, fee_paid,
                     sent_note_count, received_note_count, memo_count, block_time, expired_unmined
              FROM v_transactions
-             WHERE txid = :txid",
+             WHERE txid = :txid AND raw IS NOT NULL",
             named_params! {":txid": txid_bytes},
             |row| {
                 Ok((
