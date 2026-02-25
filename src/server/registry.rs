@@ -279,6 +279,25 @@ impl WalletRegistry {
         Ok(dirs)
     }
 
+    /// Look up wallets by UFVK hash.
+    pub fn lookup_by_ufvk_hash(
+        &self,
+        ufvk_hash: &str,
+    ) -> Result<Vec<(String, Option<String>, String, u32)>, anyhow::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, network, birthday
+             FROM watched_wallets
+             WHERE ufvk_hash = ?1 AND deleted_at IS NULL
+             ORDER BY birthday ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![ufvk_hash], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Count wallets by network.
     pub fn count_by_network(&self) -> Result<(u64, u64), anyhow::Error> {
         let mainnet: u64 = self.conn.query_row(

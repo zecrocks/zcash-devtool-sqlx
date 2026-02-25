@@ -23,9 +23,9 @@ use crate::{
     server::{
         error::ApiError,
         types::{
-            DeleteResponse, PaginationParams, RegisterUfvkRequest, RegisterUfvkResponse,
-            UfvkDetailResponse, UfvkListResponse, UpdateWalletPrefsRequest,
-            UpdateWalletPrefsResponse,
+            DeleteResponse, LookupUfvkEntry, LookupUfvkRequest, LookupUfvkResponse,
+            PaginationParams, RegisterUfvkRequest, RegisterUfvkResponse, UfvkDetailResponse,
+            UfvkListResponse, UpdateWalletPrefsRequest, UpdateWalletPrefsResponse,
         },
         AppState, SyncCommand,
     },
@@ -273,4 +273,35 @@ pub(crate) async fn update_wallet_prefs(
         id,
         transparent_sync,
     }))
+}
+
+pub(crate) async fn lookup_ufvk(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LookupUfvkRequest>,
+) -> Result<Json<LookupUfvkResponse>, ApiError> {
+    let ufvk_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(req.ufvk.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    let registry = state.registry.lock().await;
+    let rows = registry.lookup_by_ufvk_hash(&ufvk_hash)?;
+
+    if rows.is_empty() {
+        return Err(ApiError::NotFound(
+            "No wallets found for this UFVK".to_string(),
+        ));
+    }
+
+    let wallets = rows
+        .into_iter()
+        .map(|(id, _name, network, birthday)| LookupUfvkEntry {
+            id,
+            network,
+            birthday,
+        })
+        .collect();
+
+    Ok(Json(LookupUfvkResponse { wallets }))
 }

@@ -242,6 +242,23 @@ pub(crate) struct AddressBalanceResponse {
     pub last_received_height: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct LookupUfvkRequest {
+    pub ufvk: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct LookupUfvkResponse {
+    pub wallets: Vec<LookupUfvkEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct LookupUfvkEntry {
+    pub id: String,
+    pub network: String,
+    pub birthday: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
     pub error: String,

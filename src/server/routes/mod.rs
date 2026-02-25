@@ -20,6 +20,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health::health))
         .route("/ufvks", post(ufvk::register_ufvk))
         .route("/ufvks", get(ufvk::list_ufvks))
+        .route("/ufvks/lookup", post(ufvk::lookup_ufvk))
         .route("/ufvks/{id}", get(ufvk::get_ufvk))
         .route("/ufvks/{id}", delete(ufvk::delete_ufvk))
         .route("/ufvks/{id}", patch(ufvk::update_wallet_prefs))

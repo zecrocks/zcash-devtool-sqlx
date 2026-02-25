@@ -84,6 +84,32 @@ List registered wallets.
 }
 ```
 
+### POST /ufvks/lookup
+
+Look up wallet IDs by UFVK. Useful when you have a UFVK but don't know the wallet ID. The same UFVK may be registered with different birthdays, so multiple wallets can be returned.
+
+**Request body:**
+```json
+{
+  "ufvk": "uview1..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "wallets": [
+    {
+      "id": "rn3rx7pmhk5yd22v8zxuz2wdk07q3c90yem3-2400000",
+      "network": "main",
+      "birthday": 2400000
+    }
+  ]
+}
+```
+
+**Response (404):** No wallets found for this UFVK.
+
 ### GET /ufvks/{id}
 
 Get wallet details including the full UFVK.
