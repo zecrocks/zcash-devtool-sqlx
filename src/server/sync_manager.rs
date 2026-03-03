@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures_util::TryStreamExt;
 use orchard::tree::MerkleHashOrchard;
@@ -630,6 +630,11 @@ async fn enhance_transactions<P: Parameters>(
     transparent_sync: bool,
 ) -> Result<(), anyhow::Error> {
     let mut satisfied_requests = BTreeSet::new();
+    // Cache statuses resolved during this enhancement pass. After the loop exits,
+    // we re-apply them to clear queue entries that `decrypt_and_store_transaction`
+    // may have re-added (e.g. via `queue_transparent_input_retrieval`).
+    let mut status_cache: HashMap<TxId, TransactionStatus> = HashMap::new();
+
     loop {
         let mut new_request_encountered = false;
         for data_request in db_data.transaction_data_requests()? {
@@ -652,15 +657,15 @@ async fn enhance_transactions<P: Parameters>(
                         });
                     info!("Got status {:?}", status);
                     db_data.set_transaction_status(*txid, status)?;
+                    status_cache.insert(*txid, status);
                 }
                 TransactionDataRequest::Enhancement(txid) => {
                     match fetch_transaction(client, params, chain_tip, *txid).await? {
                         None => {
                             info!("Txid not recognized {:?}", txid);
-                            db_data.set_transaction_status(
-                                *txid,
-                                TransactionStatus::TxidNotRecognized,
-                            )?;
+                            let status = TransactionStatus::TxidNotRecognized;
+                            db_data.set_transaction_status(*txid, status)?;
+                            status_cache.insert(*txid, status);
                         }
                         Some((tx, mined_height)) => {
                             info!(
@@ -668,11 +673,28 @@ async fn enhance_transactions<P: Parameters>(
                                 txid, mined_height
                             );
                             decrypt_and_store_transaction(params, db_data, &tx, mined_height)?;
+                            // Cache the mined status so we can re-apply it if
+                            // decrypt_and_store_transaction re-queued transparent inputs.
+                            if let Some(h) = mined_height {
+                                status_cache.insert(*txid, TransactionStatus::Mined(h));
+                            }
                         }
                     }
                 }
                 #[cfg(feature = "transparent-inputs")]
                 TransactionDataRequest::TransactionsInvolvingAddress(tia) if transparent_sync => {
+                    // Respect request_at: skip requests scheduled for the future.
+                    if let Some(request_at) = tia.request_at() {
+                        if request_at > SystemTime::now() {
+                            info!(
+                                "Skipping TransactionsInvolvingAddress for {:?}: scheduled for the future",
+                                tia.address()
+                            );
+                            satisfied_requests.insert(data_request);
+                            continue;
+                        }
+                    }
+
                     let address = tia.address().encode(params);
                     let request = service::TransparentAddressBlockFilter {
                         address: address.clone(),
@@ -701,6 +723,20 @@ async fn enhance_transactions<P: Parameters>(
                         );
                         decrypt_and_store_transaction(params, db_data, &tx, mined_height)?;
                     }
+
+                    // Notify the wallet that we've checked this address up to the
+                    // requested range, preventing the same request from regenerating.
+                    let checked_height = tia
+                        .block_range_end()
+                        .map(|h| h - 1)
+                        .unwrap_or(chain_tip);
+                    db_data.notify_address_checked(tia.clone(), checked_height)?;
+
+                    // For unbounded (ephemeral) address checks, schedule a cooldown
+                    // so they don't fire every sync cycle.
+                    if tia.block_range_end().is_none() {
+                        let _ = db_data.schedule_next_check(&tia.address(), 300);
+                    }
                 }
                 #[cfg(feature = "transparent-inputs")]
                 TransactionDataRequest::TransactionsInvolvingAddress(_) => {
@@ -718,6 +754,12 @@ async fn enhance_transactions<P: Parameters>(
         if !new_request_encountered {
             break;
         }
+    }
+
+    // Re-apply cached statuses to clear any queue entries that were re-added
+    // by decrypt_and_store_transaction during the loop above.
+    for (txid, status) in &status_cache {
+        db_data.set_transaction_status(*txid, *status)?;
     }
 
     Ok(())
